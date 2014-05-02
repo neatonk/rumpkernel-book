@@ -1,0 +1,9 @@
+%	$Id: mynomencl.sty,v 1.1 2011/05/03 17:23:02 pooka Exp $
+
+\def\thenomenclature{%
+  \list{}{%
+    \labelwidth\nom@tempdim
+    \leftmargin\labelwidth
+    \advance\leftmargin\labelsep
+    \itemsep\nomitemsep
+    \let\makelabel\nomlabel}}

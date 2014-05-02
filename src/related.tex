@@ -1,0 +1,389 @@
+%	$Id: related.tex,v 1.28 2012/08/20 09:45:12 pooka Exp $
+
+\section{Related Work}
+\label{chap:related}
+
+This chapter surveys and compares work related to the anykernel
+architecture and rump kernels.
+
+\subsection{Running Kernel Code in Userspace}
+
+Operating systems running in userspace~\cite{dike:uml,eco:vkernel}
+make it possible to run an entire monolithic operating system inside
+a userspace process.  At a basic level this approach shares the
+same drawbacks for our purposes as any other full system virtualization
+solution.  The use of the host OS as the VMM can be both a simplifying
+factor and a complicating one.  It simplifies things because no
+separate VMM is required; the host OS is enough.  On the other
+hand, it complicates things because there is no portability layer.
+For example, the Dragonfly vkernel~\cite{eco:vkernel} relies heavily
+on host kernel interfaces to be able to create virtual memory spaces
+for processes of the guest OS.  A usermode OS port has overlap with
+a rump kernel.  For example, the virtual I/O drivers described in
+Section~\ref{sect:iobackend} can be used equally in a rump kernel
+and a usermode OS.  The differences stem from the fact that while
+a usermode OS ports the entire OS as-is on top of the host, a rump
+kernel adapts the OS codebase so that it is both componentized and
+can relegate functionality directly to the host.
+
+The Alpine~\cite{ely:alpine} network protocol development infrastructure
+provides an environment for running unmodified FreeBSD 3.3 kernel TCP/IP
+code in userspace without requiring full virtualization of the source OS.
+Alpine is implemented before the system call layer by overriding libc
+with the TCP/IP stack itself run in application process context.  It can
+be viewed as an early and domain specific version of a rump kernel.
+
+Rialto~\cite{draves:unifying} is an operating system with a unified
+interface both for userspace and the kernel making it possible to run
+most code in either environment.  Rialto was designed and implemented from
+ground-up as opposed to our approach of starting with an existing system.
+Interesting ideas include the definition of both internal and external
+linkage for an interface.
+
+The Linux Kernel Library~\cite{purdila:lkl} (LKL) provides the Linux
+kernel as a monolithic library to be used with 3rd party code such
+as applications.  It is implemented as a separate architecture for
+Linux which is configured and compiled to produce the library
+kernel.  This approach contrasts the rump kernel approach where the
+functionality consists of multiple components which are combined by
+the linker to produce the final result.  LKL uses many of the same
+basic approaches, such as relying on host threads.  However, in
+contrast to our lightweight CPU scheduler, the Linux scheduler is
+involved with scheduling in LKL, so there are two layers of
+schedulers at runtime.
+
+\subsection{Microkernel Operating Systems}
+
+Microkernel operating
+systems~\cite{accetta:mach,herder:minix3,hildebrand:qnx,liedtke:construction}
+aim for minimal functionality running in privileged mode.  The bare
+minimum is considered to be IPC and scheduling.  Driver-level code such
+as file systems, the networking stack and system call handlers run in
+unprivileged mode.  Microkernel operating systems can be roughly divided
+into two categories: monolithic and multiserver.
+
+Monolithic servers contain all drivers within a single server.
+This monolithic nature means that a single component failing will affect the entire
+server.  Monolithic servers can be likened with full system
+virtualization if the microkernel can be considered a virtual
+machine monitor.  Monolithic servers share the same basic code
+structure as a monolithic kernel.  From an application's perspective
+the implications are much the same too: if one component in the
+monolithic server fails fatally, it may affect all others as well.
+
+Multiserver microkernels divide services into various independent
+servers.  This division means that each component may fail independently.
+For example, if the TCP/IP server fails, file systems may still
+be usable (it depends on the application if this single failure has any
+impact or not).
+
+Part of the effort in building a microkernel operating system is coming
+up with the microkernel itself and the related auxiliary functions.
+The rest of the effort is implementing drivers.  A rump kernel in itself
+is agnostic about how it is accessed.  As we have shown, it is possible
+to use rump kernels as microkernel style servers on systems based on the
+monolithic kernel.  The main idea of the anykernel is not to argue how
+the kernel code should be structured, but rather to give the freedom of
+running drivers in all configurations.
+
+\subsection{Partitioned Operating Systems}
+
+Partitioned operating systems~\cite{baumann:multikernel,wentzlaff:casefos}
+run components in independent servers and use message passing for
+communication between the servers.  The motivations for partitioning
+the OS have to do with the modern processor architecture.  The trend
+is for chips to contain an increasing number of cores, and the structure of the
+chip the cores are located on starts looking like a networked system
+with routing and core-to-core latency becoming real issues.  Therefore,
+it makes sense to structure the OS around a networked paradigm with
+explicit message-passing between servers running on massively multicore
+architectures.  Since rump kernels allow hosting drivers in independent
+servers, they are a viable option for the driver components of partitioned
+operating systems.
+
+One argument for partitioned operating systems is that performance
+and code simplicity is improved since a single parallel thread in
+a server runs until it blocks.  This means that there are no atomic
+memory bus level locks in the model.  We investigated the performance
+claim in Section~\ref{sect:spinlockopt} and agree with the performance
+benefit.  However, based on the author's experiences with implementing
+production quality file servers on top of the puffs~\cite{kantee:puffs}
+cooperative multitasking model, we disagree about concurrent data
+access being easier in a model without implicit thread scheduling ---
+concurrency still needs to be handled.
+
+\subsection{Plan 9}
+
+Plan~9~\cite{pike:plan9} made the idea ``everything is a file''
+reality.  Everything in Plan~9 is accessed through the file interface.
+Kernel devices are driven by \textit{walking} the file name namespace
+to obtain a handle and then doing read and write operations on the
+handle.  In most cases the control protocol is text, although there
+are some exceptions for efficiency reasons, such as the frame
+buffer.  Remote resources can be attached to a process's view of
+the file namespace.  The side-effect of this file-oriented operation is that distributed
+computing is implied; from the application perspective
+everything looks the same, regardless of whether the resource is local
+or remote.  Since the communication protocol is text, there are no incompatibilities
+in binary representation between various machine types.  However,
+the practical implication is that the whole system must be built
+from ground up to conform to the paradigm.
+
+We showed with our remote clients that a Unix system is capable of
+limited distributed operation without having to rewrite drivers or
+build the entire OS from ground up.  The limitation is that the
+current system call interface carries many binary subprotocols
+which are incompatible between heterogeneous hosts.  Also, not all
+standard system calls that applications can expect are supported,
+\texttt{mmap()} being the canonical example --- memory mapping
+cannot be extended to a distributed environment without the interface
+contract toward the application being severed.  We do not claim
+that our result is as flexible as the one offered by Plan~9, but
+we do argue that it offers 98\% of the practical functionality with
+2\% of the effort.
+
+\subsection{Namespace Virtualization}
+
+\subsubsection*{Containers}
+
+Containers use namespace virtualization to provide multiple
+different views of the operating system's namespaces to an application, \eg the file
+system namespace.  These views are provided on top of one kernel instance.
+Examples of the container approach include FreeBSD jails~\cite{phk:jails}, Linux
+OpenVZ or the Featherweight Virtual Machine~\cite{yu:fvm}.  The effect is
+the ability to present the illusion of a virtual machine to applications.
+This illusion is accomplished by keeping track of which namespace each
+process has access to.  When combined with the ability to virtualize
+the networking stack~\cite{zec:vimage}, it is possible to run entire
+disjoint guest operating systems.
+
+The major difference to rump kernels is that in namespace virtualization
+all code runs in a single kernel.  The implications are
+reflected in the use cases.  Namespace virtualization can be used to
+present applications a system-defined policy on the namespace they
+are allowed to view.  A rump kernel as a concept is agnostic to who
+establishes the policy (cf. local and microkernel clients).
+Namespace virtualization cannot be substituted for any rump kernel
+use case where the integrity of the kernel is in danger (\eg testing
+and secure mounting of disk file systems) since damage to any
+namespace can affect the entire host kernel and therefore all
+virtual operating systems offered by it.
+
+\subsubsection*{View OS}
+
+The View OS~\cite{gardenghi:viewos} approach to namespace virtualization
+is to give the application multiple choices of the entities providing
+various services conventionally associated with the kernel, \eg networking
+or file systems.  System calls made by processes are intercepted and
+redirected to service provides.
+
+System call interception is done using \texttt{ptrace()} or alternatively
+an optimized version called \texttt{utrace()}, which requires special
+host kernel support.  This approach allows the redirection policy to
+exist outside of the client.  As servers, the View OS uses specially
+adapted code which mimics kernel functionality, such as LWIPv6 for the
+networking service.  The clientside functionality and ideology of the View
+OS and virtualized lightweight servers consisting of preexisting kernel
+code as offered by rump kernels can be seen to complement each other.
+
+\subsection{Lib OS}
+
+A library OS means a system where part of the OS functionality runs in
+the same space as the application.  Initially, the library OS was meant
+to lessen the amount of functionality hidden by the OS abstractions by
+allowing applications low-level access to OS routines~\cite{engler:exo,
+kaashoek:exoapp}.  A later approach~\cite{porter:drawbridge} used a
+library as indirection to provide lightweight application sandboxing.
+What is common between these approaches is that they target the
+application.  We have demonstrated that it is possible, although not
+most convenient, to use existing kernel code as libraries and access
+functionality at a mode detailed layer than what is exposed by standard
+system calls.  Our work was focused on the reuse of kernel code, and
+we did not target application-level sandboxing.
+
+\subsection{Inter-OS Kernel Code}
+
+The common approach for moving kernel code operating system A to
+operating system B is to port it.  Porting means that the original
+code from A is taken, incompatible changes are made, and the code
+is dropped into B.  Any improvements made by A or B will not be
+compatible with B or A, respectively, and if such improvements are
+desired, they require manual labor.
+
+Another approach is a portability layer.  Here the driver
+code itself can theoretically be shared between multiple systems
+and differences between systems are handled by a separate portability
+layer.  For example, the USB device drivers in BSD systems used to
+have a portability header caller \verb+usb_port.h+.  Drivers which
+were written against this header could theoretically be shared
+between different BSD operating systems.  It did not work very well
+in reality, and use of the macro was retired from NetBSD in 2010.
+Part of the problem was that there was no established master, and
+drivers were expected to flow between different operating systems,
+all of which were continuously evolving.
+
+The portability layer approach is better when the flow of code is
+unidirectional, \ie all improvements are made in OS A and at a
+later date transferred to OS B.  For example, the ZFS port of NetBSD
+has been done this way.  New revisions of OpenSolaris could be
+directly imported into NetBSD without having to merge changes.
+
+Next, we look at various projects which provide 3rd party support
+with the intent of being able to host the kernel either in or out of
+the kernel on a foreign system.
+
+\subsubsection*{OSKit}
+
+Instead of making system A's drivers available for system B, the OSKit
+project~\cite{ford:oskit} had a different motivation.
+It made system A's drivers available for virtually everyone
+via portability layers.  In fact, there was no single source system,
+and OSKit offered drivers from multiple different operating systems
+such as FreeBSD and NetBSD.  The approach OSKit took was to take
+code from the source systems, incorporate it into the OSKit tree,
+and produce an OSKit release.  Since OSKit functionality was not
+maintained within the source systems, every update takes manual
+effort.  The latest release of OSKit was in 2002.
+
+While the anykernel architecture defines a portability layer for
+kernel code, we do not claim it is as such the ideal approach for
+integrating kernel code into foreign monolithic kernels.  It does
+not produce a tightly integrated solution, since many subsystems
+such as the memory allocator are replicated.  However, in a system
+where drivers are separate servers, such as a multiserver microkernel
+or a hybrid kernel, the anykernel approach with rump kernel is feasible.
+
+\subsubsection*{Device Driver Environment (DDE)}
+
+The DDE (Device Driver Environment) is set of patches to a guest
+system which allows hosting drivers on other platforms with the
+DDEKit interface~\cite{ddekitwiki}.  These concepts map to
+reimplemented code in the rump kernel and the rumpuser interface,
+respectively.  The purpose of DDE is to allow to running drivers as
+servers, and only the lower layers of the kernel are supported.
+Lower layer operation is comparable to rump kernels with microkernel
+clients which call into the kernel below the system call layer.  As
+an example of use, it is possible to run the unmodified Linux kernel
+E1000 PCI NIC driver as userspace server on
+Linux~\cite{weisbach:ddekit} with DDE/Linux.
+
+\subsubsection*{NDIS}
+
+NDIS stands for ``Network Driver Interface Specification''.  It is
+the interface against which networking components are implemented on
+the Windows operating system.  Among these components are the
+network interface card (NIC) drivers, which are classified as
+\textit{miniport} drivers according to Windows Driver Model.  The
+Windows NIC drivers are interesting for other operating systems for
+two reasons:
+
+\begin{enumerate}
+\item	There is a large number of different NICs and therefore a
+	large number of NIC drivers are required.  Implementing each
+	driver separately for each OS constitutes a large amount of
+	work.
+
+\item	Some drivers support devices for which no public
+	documentation is available.
+\end{enumerate}
+
+The previous examples of use of foreign kernel code involved having
+access to the source code.  Windows drivers are distributed only as
+binary and this distribution model places additional limitations.  First, the code can
+only run on the CPU architecture the driver was compiled for, namely i386 and amd64.
+Second, the system hosting the foreign code must provide the same
+ABI as the driver --- mere API compatibility is not enough.
+
+The relevant part of the Windows kernel ABI, including NDIS, is
+emulated by the \textit{NDIS wrapper}~\cite{ndis:fbman4}.  The
+wrapper has been ported to most BSD operating systems, and enables
+including binary-only Windows NIC drivers.  In addition to providing
+the correct interfaces for the drivers to use, the wrapper must also
+take care of adjusting the function calling convention, since BSD
+operating systems use a different one from Windows.
+
+The wrapper implementation redefines all structures used by the NDIS
+interface.  It does not introduce any techniques which
+could have been useful solutions when discussing the type
+incompatibility challenges with running NetBSD code in a foreign host
+(Section~\ref{sect:foreignhost}).  The fact that is possible to
+define a function interface to attach drivers suggests that
+Windows does not suffer from the inline/macro problems which affect
+our ability to use standard NetBSD kernel modules on non-x86
+platforms (Section~\ref{sect:abicompat}).
+
+
+\subsection{Safe Virtualized Drivers}
+
+Safe drivers in virtualized context depend on the ability to limit
+driver access to only the necessary resources.  In most cases, limiting access
+is straightforward.  For example, file system drivers require access
+only to the backing storage.  In case of malfunction or malice,
+damage will be limited to everything the driver had access to.
+
+Hardware device drivers are typically more difficult to limit
+since they perform DMA.  For example, PCI devices are bus
+mastering, and DMA is done by programming the necessary physical
+memory addresses to the device and letting the device handle the
+I/O.  Incorrect or malicious addresses will be read or written by
+the device.  Limiting DMA access is possible if the hardware includes
+an IOMMU.  This capability has been used for safe unmodified virtual
+device drivers~\cite{levasseur:driverreuse}.
+
+Notably though, hardware devices do not imply problems with DMA.
+We demonstrated working USB hardware device drivers.  The rump
+kernel infrastructure does not currently support hardware device drivers
+in the general case.  Still, there is no reason why it could not be done
+on systems with IOMMU support.
+
+\subsection{Testing and Development}
+
+Sun's ZFS file system ships with a userspace testing library,
+libzpool~\cite{zfs_source_tour}.  In addition to kernel interface
+emulation routines, it consists of the Data Management Unit and
+Storage Pool Allocator components of ZFS compiled from the kernel
+sources.  The ztest program plugs directly to these components.
+This approach has several shortcomings compared to using rump
+kernels.  First, it does not include the entire file system
+architecture, \eg the VFS layer.  The effort of implementing the
+VFS interface (in ZFS terms the \textit{ZFS POSIX Layer}) was
+specifically mentioned as the hardest part of porting ZFS to
+FreeBSD~\cite{pjd:zfs}.  Therefore, it should receive non-zero
+support from the test framework.  Second, the approach requires special organization
+of the code for an individual driver.  Finally, the
+test program is specific to ZFS.  In contrast, integrating ZFS into
+the NetBSD FS-independent rump kernel test framework (described in
+Section~\ref{sect:testingstudies}) required roughly 30 minutes of
+work and 30 lines of code.
+Using a rump kernel it is possible to test the entire driver
+stack in userspace from system call to VFS layer to ZFS implementation.
+
+\subsection{Single Address Space OS}
+
+As the name suggests, a Single Address Space OS (SASOS) runs entirely
+in a single virtual memory address space, typically 64bit, with
+different applications located in different parts of the address
+space.  The single system-wide address space is in contrast to the approach where each process runs
+in its own address space.  Protection between applications can
+be provided either by the traditional memory management
+hardware approach~\cite{chase:sasosprot,heiser:mungi} or by means
+of software-isolated processes (SIP)~\cite{hunt:singularity}.
+
+A rump kernel with local clients is essentially a SASOS.  It is
+possible to use multiple process contexts against the local rump
+kernel with the \verb+rump_lwproc+ interfaces.  The difference to
+the abovementioned SASOSs is that the runtime enforces neither fair
+scheduling nor protection between these process contexts.  In other
+words, everything is based on cooperation.  For our case cooperation is
+a reasonable assumption, since all processes are provided by the
+same binary.
+
+Another ``single address space'' limitation we had to overcome was
+having the kernel and application in a joint symbol namespace.
+Any symbols exported both by the application portion
+and the kernel, \eg \verb+printf()+, would cause a collision.
+While there are SASOS solutions which, among other things, handle
+similar symbol collision problems~\cite{deller:sasoslink}, they
+require modifications to the linking and loading procedure.  Since
+we wanted things to work out-of-the-box on a Unix-style system, we
+opted for the renaming approach (Section~\ref{chap:rumpns}).

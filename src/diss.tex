@@ -1,0 +1,110 @@
+\documentclass[openright]{tkkdiss}
+
+\newcommand{\code}{\begin{figure}
+{\tt \scriptsize
+\begin{verbatim}}}
+
+\newenvironment{dedication}
+    {\begin{quotation}\begin{center}\begin{em}}
+    {\par\end{em}\end{center}\end{quotation}}
+
+\usepackage{nomencl}
+\usepackage{mynomencl}
+\usepackage{graphicx}
+\usepackage{subfigure}
+\usepackage{enumitem}
+\usepackage{epsfig}
+\usepackage{alltt}
+\usepackage{afterpage}
+\usepackage{fix-cm}
+\usepackage{xcolor}
+
+% LAST PACKAGE
+\usepackage[pdfusetitle]{hyperref}
+
+
+\renewcommand{\ttdefault}{txtt}
+
+\newcommand{\manpageref}[2]{\hyperref[manpage:#1]{manual page \textit{#2} at \pageref{manpage:#1}}}
+\newcommand{\chapref}[1]{\hyperref[chap:#1]{Chapter~\ref{chap:#1}}}
+\newcommand{\eg}{e.g.\ }
+\newcommand{\ie}{i.e.\ }
+
+\hyphenation{namespace}
+\hyphenation{anykernel}
+
+\makenomenclature
+
+\begin{document}
+
+\thispagestyle{empty}
+
+\pagecolor{blue}\afterpage{\nopagecolor}
+\begin{figure}[t]
+\includegraphics[width=5cm]{logo.pdf}
+
+{\color{white} \fontsize{50}{50}\bfseries The Design and Implementation\\
+of the\\
+Anykernel and Rump Kernels\\
+}
+\end{figure}
+
+\begin{preface}
+\pagecolor{white}
+
+\begin{verse}
+\textit{I'll tip my hat to the new constitution\\
+Take a bow for the new revolution\\
+Smile and grin at the change all around\\
+Pick up my guitar and play\\
+Just like yesterday\\
+Then I'll get on my knees and pray\\
+We don't get fooled again\\
+-- The Who}
+\end{verse}
+
+This document is intended as an up-to-date description on the fundamental
+concepts related to the anykernel and rump kernels.  It is based on
+the dissertation published in 2012: \textit{Flexible Operating System
+Internals: The Design and Implementation of the Anykernel and Rump
+Kernels}.  For now, it is recommended that you stick to reading the
+dissertation which is available via \textit{http://rumpkernel.org/}.
+
+{\large PRELIMINARY DRAFT.  DO NOT DISTRIBUTE.}
+
+\end{preface}
+
+
+\tableofcontents
+
+
+\begin{listofabbreviations}
+\input{abbr.tex}
+\printnomenclature[5cm]
+
+\end{listofabbreviations}
+
+
+\listoffigures
+\listoftables
+
+
+\input{inputs.tex}
+
+
+\bibliographystyle{tkkdiss}
+\bibliography{thebibs}
+
+
+\appendix
+
+
+\section{Manual Pages}
+\manpagetoc
+
+\input{man.tex}
+\input{sptut.tex}
+\input{patches.tex}
+
+
+\end{document}
