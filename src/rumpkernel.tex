@@ -1,0 +1,161 @@
+\documentclass[openright]{tkkdiss}
+
+\newcommand{\code}{\begin{figure}
+{\tt \scriptsize
+\begin{verbatim}}}
+
+\newenvironment{dedication}
+    {\begin{quotation}\begin{center}\begin{em}}
+    {\par\end{em}\end{center}\end{quotation}}
+
+\usepackage{nomencl}
+\usepackage{mynomencl}
+\usepackage{graphicx}
+\usepackage{subfigure}
+\usepackage{enumitem}
+\usepackage{epsfig}
+\usepackage{alltt}
+\usepackage{afterpage}
+\usepackage{fix-cm}
+\usepackage{xcolor}
+\usepackage{pdfpages}
+
+% LAST PACKAGE
+\usepackage[pdfusetitle]{hyperref}
+
+
+\renewcommand{\ttdefault}{txtt}
+
+\newcommand{\manpageref}[2]{manual page \textit{#2}}
+\newcommand{\chapref}[1]{\hyperref[chap:#1]{Chapter~\ref{chap:#1}}}
+\newcommand{\eg}{e.g.\ }
+\newcommand{\ie}{i.e.\ }
+
+\hyphenation{namespace}
+\hyphenation{anykernel}
+\hyphenation{errno}
+
+\makenomenclature
+
+\begin{document}
+
+% cover page graphics
+% compensate tkkdiss.cls hvoffset with equal but opposite hvoffset
+\includepdf[offset=1in -1in]{cover6.pdf}
+
+\cleardoublepage
+
+Copyright (c) 2012, 2014, 2015, 2016 Antti Kantee <pooka@iki.fi> \\
+All Rights Reserved.
+
+You may download this book for study from
+\url{http://book.rumpkernel.org/} in eletronic format free of charge.
+You MAY NOT redistribute this book or its contents in electronic format.
+
+You may distribute hardcopies of the book with or without fee, provided
+that the following conditions are met.  The hardcopy must be produced
+by printing the pdf from \url{http://book.rumpkernel.org/}.
+Doublesided printing must be used, and the book must be bound with even-numbered
+pages on the left and the odd-numbered pages on the right.
+Absolutely no modifications may be made, including the addition or
+removal of text, or the addition or removal of full pages or covers.
+Each hardcopy must be bound as an individual unit, and not included for
+example in a collection of works.
+
+Exceptions to these terms require prior agreement in writing.
+
+
+\input{rev.tex}
+
+
+\begin{preface}
+
+\begin{verse}
+\textit{I'll tip my hat to the new constitution\\
+Take a bow for the new revolution\\
+Smile and grin at the change all around\\
+Pick up my guitar and play\\
+Just like yesterday\\
+Then I'll get on my knees and pray\\
+We don't get fooled again\\
+-- The Who}
+\end{verse}
+
+This document is intended as an up-to-date description on the fundamental
+concepts related to the anykernel and rump kernels.  It is based on the
+dissertation written in 2011 and early 2012: \textit{Flexible
+Operating System Internals: The Design and Implementation of the Anykernel
+and Rump Kernels}.
+
+The major change with rump kernels since the first edition is a shift
+in focus and motivation.  In work leading up to the first edition, rump
+kernels were about running kernel components in userspace.  That work
+defined the core architecture, and that definition is still valid and
+accurate.  Since then, work has focused on harnessing the potential
+of rump kernels for building entirely new computation stacks.
+
+Since this edition of the book is no longer an academic
+document, we do not support every statement we make with a citation
+or experiment.  In fact, we also take the liberty to present opinions
+which are open for debate.
+
+\subsection*{Acknowledgments}
+
+Note: these acknowledgments are specifically about contributions to
+this book, not to the underlying subject of discussion.  Given that
+the main purpose of the described work is to reuse decades worth of
+existing code, listing all contributers to the code is a herculean task.
+Should you be truly interested in who contributed what, the provenance
+is available from public repository logs.
+
+This book is based on the first edition.  The people who proofread
+the first edition and provided detailed improvement suggestions are
+Dr.\ Marshall Kirk McKusick, Dr.\ Thomas Klausner and Dr.\ Xi Zhang.
+Additional thanks in the form of formal credits for the first edition go to
+Prof.\ Heikki Saikkonen, Prof.\ Renzo Davoli and Dr.\ Peter Tr\"{o}ger.
+
+The cover art was contributed by Sebastian Sala.  It is based on the
+rump kernel project logo, the author of which Sebastian also is.
+
+% epub is not available in this release.  maybe included in a future one
+%
+% The build system modifications for generating electronic publications
+% (ePub) were contributed by Igor Gali\'{c}.
+
+Parts of the Introduction and Conclusions first appeared in the author's
+article ``The Rise and Fall of the Operating System'' in USENIX ;login:
+Vol. 40, No. 5 (October 2015).  Rik Farrow provided multiple rounds of
+feedback and suggestions on the article.
+
+
+\clearpage
+\input{donations.tex}
+
+\end{preface}
+
+
+\tableofcontents
+
+
+\begin{listofabbreviations}
+\input{abbr.tex}
+\printnomenclature[5cm]
+
+\end{listofabbreviations}
+
+
+\listoffigures
+\listoftables
+
+
+\input{inputs.tex}
+
+
+\bibliographystyle{tkkdiss}
+\bibliography{thebibs}
+
+% back cover page graphics
+\includepdf[offset=-1in -1in]{figures/back6}
+
+
+\end{document}

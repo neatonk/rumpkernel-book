@@ -1,179 +1,43 @@
-%	$Id: conclusions.tex,v 1.22 2012/08/20 10:04:22 pooka Exp $
-%
 
 \section{Conclusions}
 \label{chap:conclusions}
 
-We set out with the goals of improving characteristics of monolithic
-kernel operating systems, namely security, code reusability and
-testing and development characteristics.  Our view is that a
-codebase's real value lies not in the fact that it exists, but that
-it has been proven and hardened ``out there''.
-Any approach which required us to start building the codebase from
-scratch for an alternate kernel architecture was not a viable
-solution for us.  In contrast, our work was driven by the needs of
-the existing codebase, and how to gain maximal use out of it.
+A codebase's real value lies not in the fact that it exists, but in that
+it has been proven and hardened ``out there''.  The purpose of this work
+is harnessing the power and stability of existing in-kernel drivers.
 
-We claimed that a properly architected and maintained monolithic
-kernel provides a flexible codebase.  We defined an \textit{anykernel}
-to be an organization of kernel code which allows the kernel's
-\textit{unmodified} drivers to be run in various configurations
-such as application libraries and network servers, and also in the
-original monolithic kernel.  We showed by implementation that the
-NetBSD monolithic kernel could be turned into an anykernel with
-relatively simple modifications.
+We defined an \textit{anykernel} to be an organization of kernel code
+which allows the kernel's \textit{unmodified} drivers to be run in various
+configurations such as libraries, servers, small standalone operating
+systems, and also in the original monolithic kernel.  We showed by means
+of a production quality implementation that the NetBSD monolithic kernel
+could be turned into an anykernel with relatively simple modifications.
+The key point is retaining the battle-hardened nature of the drivers.
 
-An anykernel can be instantiated into units which virtualize the
-minimum support functionality for kernel drivers; support which can be
-used directly from the host is used directly from the host without a
-layer of indirection.  The virtualized kernel driver instances
-are called \textit{rump kernels} since they retain only a part of the
-original features.  Our implementation hosts rump kernels in a process
-on a POSIX host.  We discuss other possible hosts at the end of this
-chapter alongside future work.
+An anykernel can be instantiated into units which include the minimum
+support functionality for running kernel driver components.  These units
+are called \textit{rump kernels} since they provide only a part of
+the original kernel's features.  Features not provided by rump kernels
+include for example a thread scheduler, virtual memory and the capability
+to execute binaries.  These omissions make rump kernels straightforward
+to integrate into any platform that has approximately one megabyte or
+more of RAM and ROM.  Alternatively, entirely new software stacks built
+around rump kernels are possible to execute with relative ease, as we
+explored with the Rumprun unikernel.
 
-The development effort for turning a monolithic kernel into an
-anykernel is insignificant next to the total effort a real world
-capable monolithic kernel has received.  The anykernel architecture by
-itself is not a solution to the problems; instead, it is merely a concept
-which enables solving the problems while still retaining the ability to
-run the kernel in the original monolithic configuration.
+As the parting thoughts, we remind ourselves of why operating systems
+have the role they currently have, and what we should do to move
+forward.
 
-At runtime, a rump kernel can assume the role of an application library
-or the role of a server.  Programs requesting services from rump kernels are
-called rump kernel clients or simply clients.  We defined three client
-types and implemented support for them.  Each client type maps to the
-best alternative for solving one of our motivating problems.
+The birth of timesharing operating systems took place over 50 years ago,
+an era from which we draw even the current concept of the operating system.
+Back then, hardware was simple, scarce and sacred, and those attributes
+drove the development of the concepts of the system and the users.
+In the modern world, computing is done in a multitude of ways, and the
+case for the all-encompassing operating system has watered down.
 
-\begin{enumerate}
-\item	Local: the rump kernel is used in a library capacity.
-	Requests are issues as local function calls.
-
-\item   Microkernel: the host routes client requests from regular
-	processes to drivers running in isolated servers.
-
-\item   Remote: the client and rump kernel are running in
-	different containers (processes) with the client deciding
-	which services to request from the rump kernel.  The kernel
-	and client can exist either on the same host or on
-	different hosts and communicate over the Internet.
-\end{enumerate}
-
-Local clients allow using kernel drivers as libraries for applications,
-where everything runs in a single process.  This execution model is not
-only fast, but also convenient, since to an outside observer it looks
-just like an application, \ie it is easy to start, debug and stop one.
-
-Microkernel servers allow running kernel code of questionable stability in
-a separate address space with total application transparency.  However,
-they require both host support for the callback protocol (\eg VFS for
-file systems) and superuser privileges to configure the service (in the
-case of file systems: mount it).
-
-Remote client system call routing is configured for each client
-instance separately.  However, doing so does not require privileges,
-and this approach is the best choice for virtual kernels to be used in
-testing and development.
-
-The key performance characteristics of rump kernels are:
-
-\begin{itemize}
-\item	Bootstrap time until application-readiness is in the order of
-	10ms.  On the hardware we used it was generally under 10ms.
-
-\item	Memory overhead depends on the components
-	included in the rump kernel, and is typically from 700kB to 1.5MB.
-
-\item   System call overhead for a local rump kernel is 53\% of a
-	native system call for uniprocessor configurations and 44\%
-	for a dual CPU configuration (\ie a rump kernel performs
-	a null system call twice as fast), and less than 1.5\% of
-	that of User-Mode Linux (the rump kernel syscall mechanism
-	is over 67 times as fast).
-\end{itemize}
-
-Our case study for improving security was turning a file system
-mount using an in-kernel driver to one using a rump kernel server.
-From the user perspective, nothing changes.  From the system
-administrator perspective, the only difference is one extra flag
-which is required at mount time (\texttt{-o rump}).  Using isolated
-servers prevents corrupt and malicious file systems from damaging
-the host kernel.  Due to the anykernel architecture, the ability
-to use the same file system drivers in kernel mode is still possible.
-
-Our application case study involved a redo of the \textit{makefs}
-application, which creates a file system image out of a directory
-tree without relying on in-kernel drivers.  Due to the new ability of
-being able to reuse the kernel file system drivers directly in
-applications, our reimplementation was done in under 6\% of the
-time the original implementation required.  In other words, it
-required days instead of weeks to implement.  For another example
-of using a rump kernel in an application, see
-Appendix~\ref{sect:cgdencrypt} where using the in-kernel crypto
-driver for creating an encrypted disk image is explained
-using binaries available on an out-of-the-box NetBSD installation.
-
-For testing and development we added close to 1,000 test cases using rump
-kernels as the test backends.  The test suite is run against daily NetBSD
-changes and has been able to find real regressions, including kernel
-panics which would have caused the test suite to fail if testing was done
-against the test host kernel.  Testing against rump kernels means that a
-kernel panic is inconsequential to the test run and allows the test run to
-complete in constant time irrespective of how many tests cause a kernel
-crash.  Additionally, when problems are discovered, the test program
-that was used to discover the problem can directly be used to debug
-the relevant kernel code without the need to set up a separate kernel
-debugging environment.
-
-\subsection{Future Directions and Challenges}
-\label{chap:future}
-
-The hosting of NetBSD-based rump kernels on other POSIX-style operating
-systems such as Linux was analyzed.  Running a limited set of applications
-was possible, but interfacing between the host and rump namespaces is not
-yet supported on a general level.  For example, the file status structure
-is called \texttt{struct~stat} in the client and rump kernel namespaces,
-but the binary layouts may not match, since the client uses the host
-representation and the rump kernel uses the NetBSD representation.
-If a reference to a mismatching data structure is passed from the client
-to the rump kernel, the rump kernel will access incorrect fields.
-Data passed over the namespace boundary need to be translated.  NetBSD
-readily contains system call parameter translation code for a number of
-operating systems such as Linux and FreeBSD under \texttt{sys/compat}.
-We wish to investigate using this already existing translation code
-where possible to enlarge the set of supported client ABIs.
-
-Another approach to widening host platform support is to port rump
-kernels to a completely new type of non-POSIX host.  Fundamentally,
-the host must provide the rump kernel a single memory address space and
-thread scheduling.  Therefore, existing microkernel interfaces such as L4
-and Minix make interesting cases.  Again, translation may be needed when
-passing requests from the clients to NetBSD-based rump kernels.  However,
-since interface use is likely to be limited to a small subset, such as
-the VFS/vnode interfaces, translation is possible with a small amount
-of work even if support is not readily provided under \texttt{sys/compat}.
-
-Multiserver microkernel systems may want to further partition a rump
-kernel.  We investigated this partitioning with the \textit{sockin}
-facility.  Instead of requiring a full TCP/IP stack in every rump kernel
-which accesses the network, the sockin facility enables a rump kernel
-to communicate its intentions to a remote server which does TCP/IP.
-In our case, the remote server was the host kernel.
-
-The lowest possible target for the rump kernel hypercall layer is firmware
-and hardware.  This adaption would allow the use of anykernel drivers both
-in bootloaders and lightweight appliances.  A typical firmware does not
-provide a thread scheduler, and this lack would either mandate limited
-driver support, \ie running only drivers which do not create or rely
-on kernel threads, or the addition of a simple thread scheduler in the
-rump kernel hypervisor.  If there is no need to run multiple isolated
-rump kernels, virtual memory support is not necessary.
-
-An anykernel architecture can be seen as a gateway from
-current all-purpose operating systems to more specialized operating
-systems running on ASICs.  Anykernels enable the
-device manufacturer to provide a compact hypervisor and select only
-the critical drivers from the original OS for their purposes.  The
-unique advantage is that drivers which have been used and proven
-in general-purpose systems, \eg the TCP/IP stack, may be included
-without modification as standalone drivers in embedded products.
+The most revered feature of the modern operating system is support for
+running existing applications.  We can harness that power through rump
+kernels.  Therefore, there is no reason to cram a traditional operating
+system into every problem space.  Instead, we should choose
+the most suitable software stack based on the problem at hand.

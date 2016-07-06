@@ -1,368 +1,345 @@
-%	$Id: introduction.tex,v 1.47 2012/08/20 10:11:40 pooka Exp $
-%
 
 \section{Introduction}
 \label{chap:introduction}
 
-In its classic role, an operating system is a computer program
-which abstracts the platform it runs on and provides services to
-application software.  Applications in turn provide functionality that
-the user of the computer system is interested in.  For the user to be
-satisfied, the operating system must therefore support both the platform
-and application software.
+The mission of the first edition of this book (2012) was to introduce
+the anykernel and rump kernels and motivate their existence.  Additionally, we explored
+the characteristics of the technology through various experiments.
+The paramount, often criminally overlooked experiment was the one hiding in
+plain sight: is it possible to construct the system in a sustainable,
+real-world compatible fashion.  That paramount experiment was shown
+to be a success, and that result has not changed since the original
+publication, only strengthened.  The core technology is still almost
+identical to the one described in the original book.
 
-An operating system is understood to consist of the kernel, userspace
-libraries and utilities, although the exact division between these
-parts is not definitive in every operating system.  The kernel, as the
-name says, contains the most fundamental routines of the operating
-system.  In addition to low-level platform support and critical
-functionality such as thread scheduling and IPC, the kernel offers
-\textit{drivers}, which abstract an underlying entity.  Throughout this
-dissertation we will use the term \textit{driver} in an extended sense
-which encompasses not only hardware device drivers, but additionally
-for example file system drivers and the TCP/IP network driver.
+This new edition has been written to account for the practical experiences
+from new use cases, many of which were proposed in the first edition,
+but which have since become reality.
 
-Major contemporary operating systems follow the monolithic kernel model.
-Of popular general purpose operating systems, for example Linux, Windows
-and Mac~OS~X are regarded as monolithic kernel operating systems.
-A monolithic kernel means that the entire kernel is executed in a single
-privileged domain, as opposed to being spread out to multiple independent
-domains which communicate via message passing.  The single privileged
-domain in turn means that all code in the kernel has full capability to
-directly control anything running on that particular system.  Furthermore,
-the monolithic kernel does not inherently impose any technical
-restrictions for the structure of the kernel: a routine may call any other
-routine in the kernel and access all memory directly.  However, like
-in most disciplines, a well-designed architecture is desirable.
-Therefore, even a monolithic kernel tends towards structure.
+To start off, we will look at operating systems in general: what one is,
+how they developed throughout history, where they are now, what the
+problem is, and why the time is now ripe for change.  After that, we
+will briefly introduce the Anykernel and Rump Kernels, and argue why
+they are part of the solution to the problem.
 
-\subsection{Challenges with the Monolithic Kernel}
-\label{sect:challenge}
 
-\begin{quote}
-\emph{Tuurilla ne laivatkin seilaa.}
+\subsection{Operating Systems}
 
--- Finnish saying about ship navigation
-\end{quote}
+The term \textit{operating system} originally meant a system which aids
+computer operators in loading tapes and punchcards onto the
+computer~\cite{dijkstra:ewd1303}.  We take a slightly more modern
+approach, and define an operating system as a collection
+of subroutines which allow application programs to run on a given
+\textit{platform}.  The platform can be for example a physical unit of
+hardware, or be virtually provisioned such as on the cloud.  Additionally,
+an operating system may, for example, multiplex the platform for a number
+of applications, protect applications from each other, be distributed
+in nature, or provide an interface which is visually appealing to
+some people.
 
-Despite its widespread popularity, we identified a number of
-suboptimal characteristics in monolithic kernels which we consider
-as the motivating problems for this dissertation:
+The majority of the operating system is made up of \textit{drivers},
+which abstract some underlying entity.  For example, device drivers
+know which device registers to read and write for the desired result,
+file system drivers know which blocks contain which parts of which files,
+and so forth.  In essence, a driver is a \textit{protocol translator},
+which transforms requests and responses to different representations.
 
-\begin{enumerate}
-\item   \textbf{Weak security and robustness}.
-	Since all kernel code runs in the same privileged domain, a
-	single mistake can bring the whole system down.  The fragile
-	nature of the monolithic kernel is a long-standing problem to
-	which all monolithic kernel operating systems are vulnerable.
+There is nothing about protocol translation which dictates that a driver
+must be an integral part of an operating system as opposed to being part
+of application code.  However, operating system drivers may also be used
+as a tool for imposing protection boundaries.  For example, an operating
+system may require that applications access a storage device through
+the file system driver.  The file system can then enforce that users
+are reading or writing only the storage blocks that they are supposed to
+have access to.  As we shall see shortly, imposing privilege boundaries
+grew out of historic necessity when computers were few and the operating
+system was a tool to multiplex a single machine for many users.
 
-	Bugs are an obvious manifestation of the problem,
-	but there are more subtle issues to consider.  For instance,
-	widely used file system drivers are vulnerable against
-	untrusted disk images~\cite{yang:exe}.	This vulnerability is
-	acknowledged in the manual page of the mount command for example
-	on Linux: ``\textit{It is possible for a corrupted file system
-	to cause a crash}''.
-	The commonplace act of accessing untrusted removable media such
-	as a USB stick or DVD disk with an in-kernel file system driver
-	opens the entire system to a security vulnerability.
 
-\item	\textbf{Limited possibilities for code reuse}. The code in a
-	monolithic kernel is viewed
-	to be an all-or-nothing deal due to a belief that
-	everything is intertwined with everything else.
-	This belief implies
-	that features cannot be cherry-picked and put into use in other
-	contexts and that the kernel drivers have value only when they
-	are a part of the monolithic kernel.
-	Examples include file systems~\cite{yang:exe} and
-	networking~\cite{musuvathi:netmodelcheck}.
+\subsubsection{Historical Perspective}
 
-	One manifestation of this belief is the reimplementation
-	of kernel drivers for userspace.  These reimplementations include TCP/IP
-	stacks~\cite{dinda:minet,pradhan:daytona} and file system
-	drivers~\cite{e2fsprogs, mtools, sun:testfs}~\footnote
-	{
-		We emphasize that with file systems we do
-		\textbf{not} mean FUSE (Filesystem in
-		Userspace)~\cite{fuse}.  FUSE provides a mechanism
-		for attaching a file system driver as a microkernel
-		style server, but does not provide the driver
-		itself.  The driver attached by FUSE may be an
-		existing kernel driver which was reimplemented in
-		userspace~\cite{e2fsprogs, fuseext2}.
-	}
-	for the purposes of research, testing, teaching and
-	application-level drivers.  The common approaches for reimplementation
-	are starting from scratch or taking a kernel driver and
-	adjusting the code until the specific driver can run in
-	userspace.
+Computers were expensive in the 1950's and 1960's.  For example, the cost of
+the UNIVAC I in 1951 was just short of a million dollars.  Accounting for
+inflation, that is approximately 9 million dollars in today's money.
+Since it was desirable to keep expensive machines doing something
+besides idling, batch scheduling was used to feed new computations and
+keep idletime to a minimum.
 
-	If cherry-picking unmodified drivers were possible, kernel
-	drivers could be directly used at application level.  Code
-	reuse would not only save the initial implementation effort, but
-	more importantly it would save from having to
-	maintain the second implementation.
+As most of us intuitively know, reaching the solution of a problem is
+easier if you are allowed to stumble around with constant feedback, as
+compared to a situation where you must have holistic clairvoyance over the
+entire scenario before you even start.  The lack of near-instant feedback
+was a problem with batch systems.  You submitted a job, context switched
+to something else, came back the next day, context switched back to your
+computation, and discovered your program was missing a comma.
 
-\item   \textbf{Development and testing is convoluted}.  This is a
-	corollary of the previous point:
-	in the general case testing involves booting up the whole
-	operating system for each iteration.  Not only is the bootup
-	slow in itself, but when it is combined with the fact that an
-	error may bring the entire system down, development cycles
-	become long and batch mode regression testing is difficult.
-	The difficulty of testing affects how much testing and quality
-	assurance the final software product receives.	Users are
-	indirectly impacted: better testing produces a better system.
+To address the feedback problem, timesharing was invented.  Users logged
+into a machine via a terminal and got the illusion of having the whole
+system to themselves.  The timesharing operating system juggled between
+users and programs.  Thereby, poetic justice was administered: the
+computer was now the one context-switching, not the human.  Going from
+running one program at a time to running multiple at the ``same'' time
+required more complex control infrastructure.  The system had to deal
+with issues such as hauling programs in and out of memory depending on
+if they were running or not (swapping), scheduling the tasks according
+to some notion of fairness, and providing users with private, permanent
+storage (file system).  In other words, 50 years ago they had the key
+concepts of current operating systems figured out.  What has happened
+since?
 
-	Due to the complexity and slowness of in-kernel development,
-	a common approach is to implement a prototype in userspace
-	before porting the code to the kernel.  For example FFS in
-	BSD~\cite{mckusick:ffs_userspace} and ZFS in
-	Solaris~\cite{bonwick:zfs} were implemented this way.  This
-	approach may bring additional work when the code is being
-	moved into the kernel, as the support shim in userspace
-	may not have fully emulated all kernel
-	interfaces~\cite{mckusick:ffs_userspace}.
-\end{enumerate}
+\subsubsection{And Where It Got Us}
 
-\subsection{Researching Solutions}
+The early timesharing systems isolated users from other users.
+The average general purpose operating system still does a decent job at
+isolating users from each other.  However, that type of isolation does
+little good in a world which does not revolve around people logging
+into a timesharing system.  The increasing problem is
+isolating the user from herself or himself.  Ages ago, when you yourself
+wrote all of the programs you ran, or at least had a physical interaction
+possibility with the people who did, you could be reasonably certain
+that a program you ran did not try to steal your credit card numbers.
+These days, when you download a million lines of so-so trusted application
+code from the Internet, you have no idea of what happens when you run
+it on a traditional operating system.
 
-One option for addressing problems in monolithic kernels is designing
-a better model and starting from scratch.  Some examples of
-alternative kernel models include the
-microkernel~\cite{accetta:mach,herder:minix3,hildebrand:qnx,liedtke:construction}
-Exokernel~\cite{engler:exo} and
-a partitioned kernel~\cite{baumann:multikernel,wentzlaff:casefos}.  The
-problem with starting from scratch is getting to the point of having
-enough support for external protocols to be a viable alternative for
-evaluation with real world applications.  These external protocols
-include anything serviced by a driver and range from a networking
-stack to a POSIX interface.  As the complexity of the operating
-environment and external restrictions grow, it is more and more
-difficult to start working on an operating system from
-scratch~\cite{pike:irrelevant}.  For a figure on the amount of code
-in a modern OS, we look at two subsystems in the Linux 3.3 kernel
-from March 2012.  There are 1,001,218 physical lines
-of code for file system drivers in the \texttt{fs} subdirectory and
-711,150 physical lines of code for networking drivers in the \texttt{net}
-subdirectory (the latter figure does not include NIC drivers, which are
-kept elsewhere in the source tree).  For the sake of discussion, let us
-assume that a person who can write 100~lines of bugfree code each day
-writes all of those drivers.  In that case, it will take over 46 years to
-produce the drivers in those subdirectories.
+The timesharing system also isolates the system and hardware components
+from the unprivileged user.  In this age when everyone has their own
+hardware --- virtual if not physical --- that isolation vector is of
+questionable value.  It is no longer a catastrophe if an unprivileged
+process binds to transport layer ports less than 1024.  Everyone should
+consider reading and writing the network medium unlimited due to
+hardware no longer costing a million, regardless of what the operating
+system on some system does.  The case for separate system and user
+software components is therefore no longer universal.  Furthermore,
+the abstract interfaces which hide underlying power, especially that of
+modern I/O hardware, are insufficient for high-performance
+computing~\cite{peter:arrakis}.
 
-Even if there are resources to write a set of drivers from scratch,
-the drivers have not been tested in production in the real world when they
-are first put out.  Studies show that new code contains the most
-faults~\cite{chou:oserr,ostrand:faultdist}.  The faults do not exist
-because the code would have been poorly tested before release, but rather
-because it is not possible to anticipate every real world condition in a
-laboratory environment.  We argue that real world use is the property that
-makes an existing driver base valuable, not just the fact that it exists.
+In other words, since the operating system does not protect the user
+from evil or provide powerful abstractions, it fails its mission
+in the modern world.  Why do we keep on using such systems?  Let us
+imagine the world of computing as a shape sorter.  In the beginning,
+all holes were square: all computation was done on a million dollar
+machine sitting inside of a mountain.  Square pegs were devised to fit
+the square holes, as one would logically expect.  The advent of timesharing brought better square pegs, but
+it did so in the confines of the old scenario of the mountain-machine.
+Then the world of computing diversified.  We got personal computing,
+we got mobile devices, we got IoT, we got the cloud.  Suddenly, we had
+round holes, triangular holes and the occasional trapezoid and rhombus.
+Yet, we are still fascinated by square-shaped pegs, and desperately try
+to cram them into every hole, regardless of if they fit or not.
 
-\subsection{Thesis}
-\label{sect:thesis}
+Why are we so fascinated with square-shaped pegs?  What happens if we
+throw away the entire operating system?  The first problem with that
+approach is, and it is a literal show-stopper, that applications will
+fail to run.  Already in the late 1940's computations used subroutine
+libraries~\cite{campbell-kelly:edsac}.  The use of subroutine libraries
+has not diminished in the past 70 years, quite to the contrary.
+An incredible amount of application software keeping the Internet and the
+world running has been written against the POSIX-y interfaces offered
+by a selection of operating systems.  No matter how much you do not
+need the obsolete features provided by the square peg operating system,
+you do want to keep your applications working.
 
-We claim that it is possible to construct a flexible kernel architecture
-which solves the challenges listed in Section~\ref{sect:challenge}, and
-yet retain the monolithic kernel.  Furthermore, it is possible to
-implement the flexible kernel architecture solely by good programming
-principles and without introducing levels of indirection which hinder
-the monolithic kernel's performance characteristics.  We show our claim
-to be true by an implementation for a BSD-derived open source monolithic
-kernel OS, NetBSD~\cite{NetBSD}.
+From-scratch implementations of the services provided by operating systems
+are far from trivial undertakings.  Just implementing the 20-or-so flags
+for the \texttt{open()} call in a real-world-bug-compatible way is far
+from trivial.  Assuming you want to run an existing libc/application
+stack, you have to keep in mind that you still have roughly 199 system
+calls to go after \texttt{open()}.  After you are done with the system
+calls, you then have to implement the actual components that the system
+calls act as an interface to: networking, file systems, device drivers,
+and various other driver stacks.
 
-We define an \textit{anykernel} to be an organization of kernel code
-which allows the kernel's \textit{unmodified} drivers to be run in
-various configurations such as application libraries and microkernel
-style servers, and also as part of a monolithic kernel.  This
-approach leaves the configuration the driver is used in to be
-decided at runtime.  For example, if maximal performance is
-required, the driver can be included in a monolithic kernel, but
-where there is reason to suspect stability or security, the driver
-can still be used as an isolated, non-privileged server where
-problems cannot compromised the entire system.
+After the completing the above steps for a from-scratch implementation,
+the most time-consuming part remains: \textit{testing your implementation
+in the real world and fixing it to work there}.  This step is also the
+most difficult one, since no amount of conformance to formal specification
+or testing in a laboratory is a substitute for being ``bug-compatible''
+with the real world.
 
-An anykernel can be instantiated into units which virtualize the
-bare minimum support functionality for kernel drivers.  We call these
-virtualized kernel instances \textit{rump kernels}
-since they retain only a part of the original kernel.  This
-minimalistic approach makes rump kernels fast to bootstrap (\~{ }10ms)
-and introduces only a small memory overhead (\~{ }1MB per instance).
-The implementation we present hosts rump kernels in unprivileged
-user processes on a POSIX host.  The platform that the rump kernel is
-hosted on is called the host platform or \textit{host}.
+So in essence, we are fascinated by square-shaped pegs because our
+applications rest on the support provided by those pegs.  That is why
+we are stuck in a rut and few remember to look at the map.
 
-At runtime, a rump kernel can assume the role of an application library
-or that of a server.  Programs requesting services from rump kernels
-are called rump kernel clients.  Throughout this dissertation we use
-the shorthand \textit{client} to denote rump kernel clients.
-We define three client types.
 
-\begin{enumerate}
-\item	Local: the rump kernel is used in a library capacity.
-	Like with any library, using the rump kernel as a library requires
-	that the application is written to use APIs provided by a rump
-	kernel.  The main API for a local client is a system call API
-	with the same call signatures as on a regular NetBSD system.
+\subsubsection{What We Really Need}
 
-	For example, it is possible to use a kernel file system driver as
-	a library in an application which interprets a file system image.
+We want applications to run.  We need the operating system to
+adapt to the scenario the application is deployed in, not for the
+application to adapt to a 1950's understanding of computing and hardware
+cost.
 
-\item   Microkernel: the host routes client requests from regular
-	processes to drivers running in isolated servers.
-	Unmodified application binaries can be used.
+Let us consider embedded systems.  Your system consists of one trust-domain on one piece
+of hardware.  There, you simply need at set of subroutines (drivers) to
+enable your application to run.  You do not need any code which allows
+the single-user, single-application system to act like a timesharing
+system with multiple users.  However, for example the implementation
+of the TCP/IP driver can, assuming you do not want to scale to
+kilobyte-sized system or to the bleeding edge of performance, be the
+same as one for a multiuser system.  After all, the TCP/IP protocols
+are standard, and therefore the protocol translation the driver needs
+to perform is also standard.
 
-	For example, it is possible to run a block device driver as a
-	microkernel style server, with the kernel driver outside the
-	privileged domain.
+Let us consider the cloud and especially microservices running on the cloud.
+We can indeed run the services on top of a timesharing operating system,
+A paravirtualized timesharing OS takes time to bootstrap~\cite{jiang:soda}
+and consumes resources even for the features which are not used by
+the microservice.  OS virtualization via containers~\cite{phk:jails}
+provides better performance and resource consumption than
+paravirtualization~\cite{soltesz:containers,wang:overhead}, but at the
+cost of putting millions of lines of code into the trusted computing base.
 
-\item   Remote: the client and rump kernel are running in
-	different containers (processes) with the client deciding
-	which services to request from the rump kernel and which to
-	request from the host kernel.  For example, the client can
-	use the TCP/IP networking services provided by a rump
-	kernel.  The kernel and client can exist either on the same
-	host or on different hosts.  In this model, both
-	specifically written applications and unmodified applications
-	can use services provided by a rump kernel.  The API for
-	specifically written applications is the same as for local
-	clients.
+Using timesharing systems en masse will allow applications to run in both
+cases, but not adapting to the scenario comes with a price.  In effect,
+tradeoffs are made either for performance or security.
 
-	For example, it is possible to use an unmodified Firefox web
-	browser with the TCP/IP code running in a rump kernel server.
-\end{enumerate}
 
-Each configuration contributes to solving our motivating problems:
+\subsection{The Anykernel and Rump Kernels}
 
-\begin{enumerate}
-\item   \textbf{Security and robustness}.
-	When necessary, the use of a rump kernel will allow unmodified
-	kernel drivers to be run as isolated microkernel servers
-	while preserving the user experience.  At other times the
-	same driver code can be run in the original fashion as part
-	of the monolithic kernel.
+This work is about how to move from the world of timesharing systems
+to the world of the future in a fashion in which applications continue
+to function.  The two key terms are \textit{anykernel} and
+\textit{rump kernel}, both of which we will introduce and describe shortly.
 
-\item	\textbf{Code reuse}.  A rump kernel may be used by an
-	application in the same fashion as any other userlevel
-	library.  A local client can call any routine inside the
-	rump kernel.
+Applications need subroutines to work, and those subroutines are provided
+by operating systems.  We call those subroutines drivers, and state that
+not only does a typical application require a large set of drivers,
+but also that those drivers are also non-trivial to write and maintain.  While
+operating systems built around a timesharing model are rich in drivers
+due to having a lot of history behind them, they are not sufficient for
+the use cases required by the modern world.  We need to
+start treating drivers as library-like components instead of requiring a
+separate implementation for each operating system.  The library-approach
+will allow to build the software stack to suit the scenario, instead of
+having to build the scenario to suit the available operating systems.
 
-\item	\textbf{Development and testing}.  The lightweight nature
-	and safety properties of a rump kernel allow for safe testing
-	of kernel code with iteration times in the millisecond range.
-	The remote client model enables the creation of tests using
-	familiar tools.
-\end{enumerate}
+The term \textit{anykernel} was coined in response to the ever-increasing
+number of operating system models: monolithic kernel, microkernel,
+exokernel, multikernel, unikernel, etc.  As the saying goes,
+creating something new is is 5\% inspiration and 95\% perspiration.
+While the inspiration required to come up with a new model should not be
+undervalued, after that 95\% of the work for reaching a usable software
+stack remains.  That 95\% consists largely of the drivers.  For example,
+even the most trivial cloud operating system requires a TCP/IP driver,
+and creating one from scratch or even porting one is far from trivial.
+The anykernel is a term describing a kernel-type codebase from which
+drivers, the 95\%, can be extracted and integrated to \textit{any}
+operating system model --- or at least near any --- without porting and
+maintenance work.
 
-Our implementation supports rump kernels for
-file systems~\cite{kantee:rumpfs}, networking~\cite{kantee:rumpnet}
-and device drivers~\cite{kantee:rumpdev}.
-Both synthetic benchmarks and real world data gathered from a period
-between 2007 and 2011 are used for the evaluation.  We focus our efforts
-at drivers which do not depend on a physical backend being present.  Out
-of hardware device drivers, support for USB drivers has been implemented
-and verified.  We expect it is possible to support generic unmodified
-hardware device drivers in rump kernels by using previously published
-methods~\cite{levasseur:driverreuse}.
+A \textit{rump kernel}, as the name implies, is a timesharing style
+kernel from which portions have been removed.  What remains are drivers
+and the basic support routines required for the drivers to function --
+synchronization, memory allocators, and so forth.  What is gone are
+policies of thread scheduling, virtual memory, application processes,
+and so forth.  Rump kernels have a well-defined (and small!) portability
+layer, so they are straightforward to integrate into various environments.
 
-\subsection{Contributions}
+\begin{figure}[t]
+\includegraphics[width=\linewidth]{imgs/concept-comparison}
+\caption[Relationship between key concepts]
+{\textbf{Relationship between key concepts}:
+The anykernel allows driver components to be lifted out of the original
+source tree and rump kernels to be formed out of those drivers.
+Rump kernels can be used to build products and platforms; one example
+of a use case is illustrated.
+}
+\label{fig:concept-comparison}
+\end{figure}
 
-The original contributions of this dissertation are as follows:
-
-\begin{enumerate}
-\item	The definition of an anykernel and a rump kernel.
-
-\item   Showing that it is possible to implement the above in
-	production quality code and maintain them in a real world
-	monolithic kernel OS.
-
-\item   Analysis indicating that the theory is generic and can be
-	extended to other operating systems.
-\end{enumerate}
-
-\subsection{Dissertation Outline}
-
-\chapref{concept} defines the concept of an anykernel and explains
+Figure~\ref{fig:concept-comparison} illustrates how a timesharing system,
+anykernel and rump kernel are related.  The figure indeed illustrates
+only one example, and by extension, only one example platform for hosting
 rump kernels.
-\chapref{implementation} discusses the implementation and provides
-microbenchmarks as supporting evidence for implementation decisions.
-\chapref{evaluation} evaluates the solution.
-\chapref{related} looks at related work.
+
+Throughout most of the technical discussion in this book we will
+consider a userspace program as the platform for hosting a rump kernel.
+There are two reasons why it is so.  First, the original motivation for
+rump kernels back in 2007 was developing, debugging and testing kernel
+drivers.  What better place to do it than in userspace?  Second, userspace
+is in itself a ``hosted'' platform, and we do not have full control of
+for example the symbol namespace or the scheduler.  Therefore, if rump
+kernels can work in userspace, they can also easily work on platforms
+which are custom-built to host rump kernels.
+
+The implementation we discuss is available in NetBSD.  It is crucial
+to differentiate between the implementation being \textit{in} NetBSD,
+and it being available as patches for NetBSD.  The idea of the anykernel
+is that it is an inherent property of a code base, so as to keep things
+maintained.  What, in fact, keeps the implementation working is NetBSD's
+internal use of rump kernels for testing kernel drivers.  This testing
+also allows NetBSD to provide better quality drivers, so there is clear
+synergy.  However, we will not focus on the testing aspects in this book;
+if curious, see the first edition for more discussion on development
+and testing.
+
+
+\subsection{Book Outline}
+
+The remainder of the book is as follows.  \chapref{concept} defines the
+concept of the anykernel and rump kernels and \chapref{implementation}
+discusses the implementation and provides microbenchmarks as supporting
+evidence for implementation decisions.  Essentially, the two previous
+chapters are a two-pass flight over the core subject.  The intent is to
+give the reader a soft landing by first introducing the new concept in
+abstract terms, and then doing the same in terms of the implementation.
+That way, we can include discussion of worthwhile implementation details
+without confusing the high-level picture.  If something is not clear from
+either chapter alone, the recommendation is to study the relevant text from
+the other one.  If you read the first edition of this book, you may choose
+to only lightly skim these two chapters; the main ideas are the same
+as in the first edition.
+
+\chapref{ecosystem} gives an overview of what we have
+built on top of rump kernels.  A brief history of the project is
+presented in \chapref{history}.  The history chapter can be read first,
+last, or anywhere in between, or not at all.  Finally,
 \chapref{conclusions} provides concluding remarks.
 
+
+\subsubsection*{What this book is not}
+
+This book is not a user manual.  You will not learn how to use rump
+kernels in day-to-day operations from this book.  However, you will gain a
+deep understanding of rump kernels which, when coupled with the user
+documentation, will give you superior knowledge of how to use rump
+kernels.  Most of the user documentation is available as a wiki at
+\url{http://wiki.rumpkernel.org/}.
+
+
 \subsection{Further Material}
+
+In general, further material is reachable from the rump kernel
+project website at \url{http://rumpkernel.org/}.
 
 \subsubsection{Source Code}
 \label{sect:src}
 
-The implementation discussed in this dissertation can be found in
-source code form from the NetBSD CVS tree as of March 31st 2011
-23:59UTC.
+The NetBSD source files and their respective development histories are
+available for study from repository provided by the NetBSD project,
+\eg via the web interface at \texttt{cvsweb.NetBSD.org}.  These files
+are most relevant for the discussion in \chapref{concept} and
+\chapref{implementation}.
 
-NetBSD is an evolving open source project with hundreds of volunteers
-and continuous change.  \textit{Any statement we make about NetBSD
-reflects solely the above timestamp and no other}.  It is most
-likely that statements will apply over a wide period of time, but
-it is up to the interested reader to verify if they apply to earlier
-or later dates.
+The easiest way to fetch the latest NetBSD source code in bulk is to
+run the following commands (see Section~\ref{sect:srcnetbsd} for further
+information):
 
-It is possible to retrieve the source tree with the following command:
-{\small
 \begin{verbatim}
-cvs -d anoncvs@anoncvs.netbsd.org:/cvsroot co -D'20110331 2359UTC' src
-\end{verbatim}}
+git clone http://repo.rumpkernel.org/src-netbsd
+cd src-netbsd
+git checkout all-src
+\end{verbatim}
 
-Whenever we refer to source file, we implicitly assume
-the \texttt{src} directory to be a part of the path, \ie
-\verb+sys/kern/init_main.c+ means \verb+src/sys/kern/init_main.c+.
-
-For simplicity, the above command checks out the entire NetBSD
-operating system source tree instead of attempting to cherry-pick only
-the relevant code.  The checkout will require approximately 1.1GB of
-disk space.  Most of the code relevant to this document resides under
-\texttt{sys/rump}, but relevant code can be found under other paths as
-well, such as \texttt{tests} and \texttt{lib}.
-
-Diffs in Appendix~C detail where the above source tree differs
-from the discussion in this dissertation.
-
-The project was done in small increments in the NetBSD source with
-almost daily changes.  The commits are available for study from
-repository provided by the NetBSD project, \eg via the web interface
-at \texttt{cvsweb.NetBSD.org}.
-
-\subsubsection*{NetBSD Release Model}
-
-We use NetBSD release cycle terminology throughout this dissertation.
-The following contains an explanation of the NetBSD release model.
-It is a synopsis of the information located at
-\texttt{http://www.NetBSD.org/releases/release-map.html}.
-
-The main development branch or \textit{HEAD} of NetBSD is known as
-\textit{NetBSD-current} or, if NetBSD is implied, simply
-\textit{-current}.  The source code used in this dissertation is
-therefore -current from the aforementioned date.
-
-Release branches are created from -current and are known by their
-major number, for example NetBSD~5.  Release branches get bug fixes
-and minor features, and releases are cut from them at suitable
-dates.  Releases always contain one or more minor numbers, \eg
-NetBSD~5.0.1.  The first major branch after March~31st is NetBSD~6
-and therefore the first release to potentially contain this work
-is NetBSD~6.0.
-
-A -current snapshot contains a kernel API/ABI version.  The version is
-incremented only when an interface changes.  The kernel version
-corresponding to March 31st is 5.99.48.  While this version number
-stands for any -current snapshot between March~9th and April~11th~2011,
-whenever 5.99.48 is used in this dissertation, it stands for -current
-at 20110331.
+Additionally, there is infrastructure to support building rump kernels
+for various platforms hosted at \url{http://repo.rumpkernel.org/}.
+The discussion in \chapref{ecosystem} is mostly centered around
+source code available from that location.
 
 \subsubsection*{Code examples}
 
-This dissertation includes code examples from the NetBSD source
+This book includes code examples from the NetBSD source
 tree.  All such examples are copyright of their respective owners
 and are not public domain.  If pertinent, please check the full
 source for further information about the licensing and copyright
@@ -370,15 +347,6 @@ of each such example.
 
 \subsubsection{Manual Pages}
 
-Unix-style manual pages for interfaces described in this dissertation
-are available in Appendix A.  The manual pages are taken verbatim
-from the NetBSD 5.99.48 distribution.
-
-\subsubsection{Tutorial}
-
-Appendix B contains a hands-on tutorial.  It walks through various
-use cases where drivers are virtualized, such as encrypting a file
-system image using the kernel crypto driver and running applications
-against virtual userspace TCP/IP stacks.  The tutorial uses standard
-applications and does not require writing code or compiling special
-binaries.
+Various manual pages are cited in the document.  They are available
+as part of the NetBSD distribution, or via the web interface
+at \url{http://man.NetBSD.org/}.

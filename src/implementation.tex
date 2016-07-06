@@ -1,13 +1,18 @@
-%	$Id: implementation.tex,v 1.107 2012/11/15 02:34:39 pooka Exp $
 
-\section{Implementation}
+\section{Implementation: Anykernel and Rump Kernels}
 \label{chap:implementation}
 
 The previous chapter discussed the concept of an anykernel and rump
 kernels.  This chapter describes the code level modifications that
 were necessary for a production quality implementation on NetBSD.
 The terminology used in this chapter is mainly that of NetBSD, but the
-concepts are believed to apply to other similar operating systems.
+concepts apply to other similar operating systems as well.
+
+In this chapter we reduce the number of variables in the discussion by
+limiting our examination to rump kernels and their clients running on a
+NetBSD host.  See the next chapter (\chapref{ecosystem}) for discussion on
+rump kernels and their clients running on hosts beyond NetBSD userspace.
+
 
 \subsection{Kernel Partitioning}
 \label{sect:partition}
@@ -22,10 +27,10 @@ in this section.
 
 As background, it is necessary to recall how the NetBSD kernel is linked.
 In C linkage, symbols which are unresolved at compile-time must be
-satisfied at executable link-time.  For example, if a routine in
+satisfied at binary link-time.  For example, if a routine in
 \texttt{file1.c} wants to call \texttt{myfunc()} and \texttt{myfunc()}
 is not present in any of the object files or libraries being linked
-into an executable, the linker flags an error.  A monolithic kernel
+into a binary, the linker flags an error.  A monolithic kernel
 works in a similar fashion:  all symbols must be resolved when the
 kernel is linked.  For example, if an object file with an unresolved
 symbol to the kernel's pathname lookup routine \texttt{namei()} is
@@ -64,7 +69,7 @@ fileops}, \texttt{struct protosw}, etc.) and we could concentrate
 on the exceptions.  Code was divided into functionality groups
 using source modules as boundaries.
 
-The three techniques we used to address problems are as follows:
+The two techniques we used to address problems are as follows:
 
 \begin{enumerate}
 \item   \textbf{code moving}.  This solved cases where a source
@@ -94,26 +99,34 @@ The three techniques we used to address problems are as follows:
 	not present.  At runtime the pointer may be adjusted to
 	point to an actual implementation of the feature if it is
 	present.
-
-\item   \textbf{weak symbols}.  A weak symbol is one which is used
-	in case no other definition is available.  If a non-weak
-	symbol is linked in the same set, it is used and the weak
-	symbol is silently ignored by the linker.  Essentially,
-	weak symbols can be used to provide a default stub
-	implementation.  However, as opposed to function pointers,
-	weak symbols are a linker concept instead of a program
-	concept.  It is not possible to deduce behavior
-	by looking at the code at the callsite.  Unlike a function
-	pointer, using a weak symbol also prevents a program from
-	reverting from a non-weak definition back to a weak
-	definition.  Therefore, the weak symbol technique cannot
-	be used anywhere where code can be unloaded at runtime.
-	We used stub implementations defined by weak symbols very
-	sparingly because of the above reasons and preferred other
-	approaches.
 \end{enumerate}
 
-Finally, to illustrate the problems and techniques, we discuss
+Previously, we also used weak symbol aliases sparingly to provide stub
+implementations which were overridden by the linker if the component
+providing the actual implementation was linked.  Weak aliases were
+found to be problematic with dynamically linked libraries on some
+userspace platforms, \eg Linux with glibc.  In \textit{lazy binding},
+a function is resolved by the dynamic linker only when the function
+is first called, so as to avoid long program startup times due to resolving
+symbols which are never used at runtime.  As a side-effect, lazy binding
+theoretically allows \texttt{dlopen()}'ing libraries which override weak
+aliases as long as the libraries are loaded before the overridden functions
+are first called.  Namely, in the case of rump kernels, loading must
+take place before \verb+rump_init()+ is called.  However, some dynamic
+linkers treat libraries loaded with \texttt{dlopen()} different from
+ones loaded when the binary is executed.  For example, the aforementioned
+glibc dynamic linker overrides weak aliases with symbols from
+\texttt{dlopen()}'d libraries only if the environment variable
+\verb+LD_DYNAMIC_WEAK+ is set.  With some other dynamic linkers,
+overriding weak symbols is not possible at all.  Part of the power of
+rump kernels is the ability to provide a single binary which dynamically
+loads the necessary components at runtime depending on the configuration
+or command line parameters.  Therefore, to ensure that rump kernels work
+the same on all userspace platforms, we took the extra steps necessary
+to remove uses of weak aliases and replace them with the above-mentioned
+two techniques.
+
+To illustrate the problems and our necessary techniques, we discuss
 the modifications to the file \verb+sys/kern/kern_module.c+.  The
 source module in question provides support for loadable kernel
 modules (discussed further in Section~\ref{sect:extending}).
@@ -143,7 +156,7 @@ pointer to \verb+module_load_vfs()+.  In addition to avoiding a
 direct reference from the base to a faction in rump kernels, this
 pointer has another benefit: during bootstrap it protects the kernel from
 accidentally trying to load kernel modules from the file system before
-a file system has been mounted~\footnote{\texttt{sys/kern/vfs\_subr.c}
+the root file system has been mounted~\footnote{\texttt{sys/kern/vfs\_subr.c}
 rev 1.401}.
 
 \subsubsection{Extracting and Implementing}
@@ -155,13 +168,14 @@ it, meaning that we do an implementation suitable for use in a rump
 kernel.  We work on a source file granularity level, which means
 that either all of an existing source file is extracted, or the
 necessary routines from it (which may be all of them) are implemented.
-Implemented source files are placed under \texttt{/sys/rump},
+Implemented source files are placed under \texttt{sys/rump},
 while extracted ones are picked up by Makefiles from other subdirectories
-under \texttt{/sys}.
+under \texttt{sys/}.
 
 The goal is to extract as much as possible for the features
-we desire.  Broadly speaking, there are three cases where extraction
-is not possible.
+we desire, as to minimize implementation and maintenance effort and to
+maximize the semantic correctness of the used code.  Broadly speaking,
+there are three cases where extraction is not possible.
 
 \begin{enumerate}
 \item   \textbf{code that does not exist in the regular kernel}: this
@@ -178,10 +192,11 @@ is not possible.
         It should be noted, though, that not all VM code should
         automatically be disqualified from extraction.  For instance,
         VM readahead code is an algorithm which does not have anything
-        per se to do with VM, and we have extracted it.
+        per se to do with virtual memory, and we have extracted it from
+	\verb+sys/uvm/uvm_readahead.c+.
 
 \item   \textbf{bypassed layers} such as scheduling.  They need
-	completely different handling.
+	different handling.
 \end{enumerate}
 
 In some cases a source module contained code which was desirable to be
@@ -201,11 +216,10 @@ where it arguably belongs, \verb+kern_proc.c+ could be extracted.
 
 
 \subsubsection{Providing Components}
+\label{sect:components}
 
-On a POSIX system, the natural way to provide components to be
-linked together is with libraries.  Rump kernel components are compiled
-as part of the regular system build and installed as libraries into
-\texttt{/usr/lib}.  The kernel base library is called \texttt{librump} and
+We provide components as libraries.
+The kernel base library is called \texttt{librump} and
 the hypervisor library is called \texttt{librumpuser}.  The factions
 are installed with the names \texttt{librumpdev}, \texttt{librumpnet}
 and \texttt{librumpvfs} for dev, net and vfs, respectively.  The
@@ -218,7 +232,7 @@ consider the NFS client: while it is a file system driver, it
 also depends on networking.
 
 \begin{figure}[t]
-\includegraphics{sharedstatic}
+\includegraphics{imgs/sharedstatic}
 \caption[Performance of position independent code (PIC)]
 {\textbf{Performance of position independent code (PIC).}
 A regular kernel is compiled as non-PIC code.  This compilation
@@ -230,20 +244,22 @@ the tradeoff between execution speed and memory use.
 \label{fig:sharedstatic}
 \end{figure}
 
-By default, NetBSD installs two production variants of each library:
-a static library and a shared library.  The system default is to
-produce dynamically linked executables which use shared libraries,
-and this approach is also used when linking rump kernels.  In custom
-built rump kernels the choice is up to the user.  Shared libraries
-allow the host to load the components into physical memory only once
-irrespective of how many rump kernel instances are started, but shared libraries have worse
-performance due to indirection~\cite{gingell:shlib}.
-Figure~\ref{fig:sharedstatic} illustrates the speed penalty inherent
-to the position independent code in shared libraries by measuring
-the time it takes to create and disband 300k threads in a rump
-kernel.  As can be deduced from the combinations, shared
-and static libraries can be mixed in a single rump kernel instance
-so as to further optimize the behavior with the memory/CPU tradeoff.
+Two types of libraries are available: static and dynamic.  Static
+libraries are linked by the toolchain into the binary, while dynamic
+binaries are linked at runtime.  Commonly, dynamic linking is used
+with shared libraries compiled as position independent code (PIC), so as
+to allow one copy of a library to be resident in memory and be mapped
+into an arbitrary number of programs.  Rump kernels support both types
+of libraries, but it needs to be noted that dynamic linking depends on
+the host supporting that runtime feature.  It also need to be noted
+that while shared libraries save memory in case they are needed more
+than once, they have inherently worse performance
+due to indirection~\cite{gingell:shlib}.
+Figure~\ref{fig:sharedstatic} illustrates that performance penalty by
+measuring the time it takes to create and disband 300k threads in a
+rump kernel.  As can be deduced from the combinations, shared and static
+libraries can be mixed in a single rump kernel instance so as to further
+optimize the behavior with the memory/CPU tradeoff.
 
 \subsection{Running the Kernel in an Hosted Environment}
 
@@ -254,18 +270,20 @@ to fulfill its needs.  When running on top a hardware emulator the
 emulator provides the same hardware interfaces.  In a paravirtualized
 setup the hypervisor provides the necessary interfaces.  In a
 usermode OS setup, the application environment of the hosting OS
-makes up the hypervisor.  In this section we discuss hosting a rump
-kernel in a process on a POSIX host.
+makes up the hypervisor.  In this section we discuss details related
+to hosting a rump kernel in any environment.  We use POSIX
+userspace as the case for the bulk of the discussion, since that host induces
+the superset of issues related to hosting rump kernels.
 
 \subsubsection{C Symbol Namespaces}
 \label{chap:rumpns}
 
-In the regular case, the kernel and process C namespaces are disjoint.
+In the regular case, the kernel and userspace C namespaces are disjoint.
 Both the kernel and application can contain the same symbol name,
 for example \texttt{printf}, without a collision occurring.  When we
 run the kernel in a process container, we must take care to preserve
 this property.  Calls to printf made by the client still need to go to
-libc, while calls to printf made by the kernel need to be handled by
+libc, while calls to printf made by the rump kernel need to be handled by
 the in-kernel implementation.
 
 Single address space operating systems provide a
@@ -307,18 +325,19 @@ it left them.
 
 \begin{figure}[t]
 \begin{center}
-\includegraphics[width=5.3cm,height=3cm]{vpk_namespace.pdf}
+\includegraphics[width=5.3cm,height=3cm]{imgs/vpk_namespace}
 \caption[C namespace protection]{\textbf{C namespace protection}.  When
 referencing a rump kernel symbol from outside of the rump kernel, the
 prefix must be explicitly included in the code.  All references from
 inside the rump kernel implicitly contain the prefix due to bulk
 symbol renaming.  Corollary: it is not possible to access a symbol
-outside the rump kernel namespace from inside the rump kernel.}
+outside the rump kernel namespace from inside the rump kernel without
+using a hypercall.}
 \label{fig:namespace}
 \end{center}
 \end{figure}
 
-\begin{table}
+\begin{table}[t]
 \begin{tabular}{|l|l|l|}
 \hline
 rump kernel object & original symbol name & symbol after renaming \\
@@ -352,7 +371,7 @@ underscore rule which had to be excluded from the rename as well:
 We handle the architecture specific ones with a quirk table.  There
 is one quirk each for PA-RISC, MIPS, and PowerPC64.  For example,
 the MIPS toolchain generates the symbol \verb+_gp_disp+, which
-needs to be excluded from the renaming.  Experience of over 2.5
+needs to be excluded from the renaming.  Experience of over 5
 years shows that once support for an architecture is added,
 no maintenance is required.
 
@@ -371,11 +390,12 @@ a trap and the host OS or VMM to take control.  Typically, this trap
 will result in process termination.
 
 Virtualization and CPU emulation technologies solve the problem by
-not executing privileged instructions on the host CPU.
-For example, Xen~\cite{barham:xen} uses hypercalls, User Mode
+not executing privileged instructions on the host CPU in unprivileged mode.
+For example, paravirtualized Xen~\cite{barham:xen} uses hypercalls, User Mode
 Linux~\cite{dike:uml} does not use privileged instructions in the
-usermode machine dependent code, and QEMU~\cite{bellard:qemu}
-handles such instructions in the machine emulator.
+usermode machine dependent code, QEMU~\cite{bellard:qemu}
+handles such instructions in the machine emulator, and CPU virtualization
+extensions trap the handling of those instructions to the hypervisor.
 
 In practice kernel drivers do not use privileged instructions
 because they are found only in the architecture specific parts of
@@ -383,172 +403,128 @@ the kernel.  Therefore, we can solve the problem by defining that
 it does not exist in our model --- if there are any it is a failure
 in modifying the OS to support rump kernels.
 
-\subsubsection{The Hypercall Interface}
+\subsubsection{The Hypercall Interface(s)}
 \label{sect:hypercall}
 
-The hypercall library implements the hypercall interface for the
-particular host.  On a POSIX host, the library is called
-\texttt{librumpuser} and the source code can be found from
-\texttt{lib/librumpuser}.  For historical reasons, the interface
-itself is also called \textit{rumpuser}, although for example
-\textit{rumphyper} would be a more descriptive name.
+The hypercall interfaces allow a rump kernel to access host platform
+resources and integrate with the host.  For example, page level
+memory allocation and the blocking and running of threads is
+accomplished via the hypercall interface.  Essentially, the hypercall
+interface represents the \textit{minimal} interface for running kernel
+drivers.  As we shall see later in Section~\ref{sect:rumprun},
+transitively the hypercall interface is also the minimal interface
+for running POSIX applications.  Notably, the Embassies
+project~\cite{howell:embassies} investigated a minimal execution
+interface for applications, and ended up with a similar interface,
+thereby increasing our confidence in our result being correct.
 
-As an example of a hypercall implementation we consider allocating
-``physical'' memory from the host.  This hypercall is implemented
-by the hypercall library with a call to \verb+posix_memalign()+\footnote
-{
-	\texttt{posix\_memalign()} is essentially \texttt{malloc()}, but
-	it takes an alignment parameter in addition to the size
-	parameter.  Kernel code assumes that allocating a page of
-	memory will return it from a page-aligned offset, and
-	using \texttt{posix\_memalign()} instead of \texttt{malloc()}
-	allows to guarantee that memory allocated by the hypercall
-	will be page-aligned.
-}.
-Conversely, the hypercall for releasing memory back to the system
-is implemented with a call to \verb+free()+.
-
-Theoretically, a rump kernel can accomplish this by calling the host
-directly.  However, there are a number of reasons a separate
-hypercall interface is better.
-
-\begin{enumerate}
-
-\item The user namespace is not available in the kernel.
-To for example make the \verb+posix_memalign()+ call,
-the rump kernel has to define the prototype for the function itself.
-If the prototype matches what libc expects, the call is correctly
-resolved at link time.  The downside is that duplicated information
-can always go out-of-date.  Furthermore, calling out of the kernel
-is not directly possible due to the symbol renaming we presented
-in Section~\ref{chap:rumpns}.
-
-\item A separate interface helps when hosting a rump kernel on a platform
-which is not native to the rump kernel version.  For example,
-while all POSIX platforms provide
-\verb+stat(const char *path, struct stat *sb)+, there is no standard
-for the binary representation of \verb+struct stat+.  Therefore, a
-reference to the structure cannot be passed over the interface as
-binary data, since the representation might not be the same in the kernel
-and the hypercall library.  Even different versions of NetBSD have
-different representations, for example due to increasing \verb+time_t+
-from 32bit to 64bit.  Therefore, to have a well-defined interface
-when running on a non-native host, the hypercall interface should
-only use data types which are the same regardless of ABI.  For
-example, the C99 constant width type \verb+uint64_t+ is preferred
-over \verb+time_t+.  Since the hypercall executes in the same
-process as the rump kernel, byte order is not an issue, and the
-native one can be used.
-
-\item A separate interface helps future investigation of running
-rump kernels on non-POSIX platforms, such as microkernels.
-This investigation, however, will require adjustments to the
-hypercall interface.  While the need for adjustments is foreseeable,
-the exact forms of the adjustments are not, and that is the reason
-they are not already in place.
-\end{enumerate}
-
-The header file \texttt{sys/rump/include/rump/rumpuser.h} defines the
-hypercall interfaces.  All hypercalls by convention begin with the string
-``rumpuser''.  This prevents hypercall interface references in the rump
-kernel from falling under the jurisdiction of symbol renaming.
-
-We divide the hypercall interfaces into mandatory and optional ones.
-The routines that \textbf{must} be implemented by the rumpuser library
-are:
+Historically, all hypercalls were globally implemented by a single
+library.  This was found to be inflexible for I/O devices for two reasons:
 
 \begin{itemize}
+\item	Different I/O devices have different requirements.  Imagine
+	the hypercalls for a network interface necessary to send and
+	receive packets.  If you imagined a PCI network interface
+	card, the necessary hypercalls are completely different from
+	if you imagined \texttt{/dev/tap} or netmap~\cite{rizzo:netmap}.
+	With a growing number of different I/O devices being supported,
+	codifying the different requirements under a compact, fast and
+	understandable interface was not seen to be reasonably possible.
+
+\item	Not all platforms require all I/O devices to be supported.
+	Globally pooling all hypercalls together obfuscates what is
+	the minimal required set of hypercall functionality to run rump
+	kernel on a given platform with a given set of I/O devices.
+\end{itemize}
+
+Therefore, there are now two types of hypercalls: main hypercalls,
+which are always required by every rump kernel, and I/O hypercalls,
+which allow given types of I/O drivers to operate.  The main hypercall
+interface is a single, stable and versioned interface.  The I/O hypercalls
+are private to the I/O bus or the I/O driver, and an implementation is
+required only if the component using the hypercall is linked into the
+rump kernel.  The versioning of I/O hypercalls and changes to them are
+up to individual drivers, and for example over the course of optimizing
+networking packet processing performance, we made several tweaks to the
+hypercalls used by the virtual packet I/O drivers
+(Section~\ref{sect:networking}).  These changes provided for example
+the ability to deliver packets in bursts and zero-copy processing.
+For the remainder of this section we will describe the main hypercall
+interface.
+
+
+\subsubsection*{Main hypercalls}
+
+For the historical reason of rump kernels initially running in userspace,
+the hypercall interface is called \textit{rumpuser}; for example
+\textit{rumphyper} would be a more descriptive name, but changing it
+now brings unnecessary hassle.  The version of the hypercall revision
+we describe here is 17.  In reality, version 17 means the second stable
+rendition of the interface, as during initial development the interface
+was changed frequently and the version was bumped often.  The canonical
+implementation for the interface is the POSIX platform
+implementation, currently found from \texttt{lib/librumpuser} in
+the NetBSD tree.  Implementations for other platforms are found from
+\url{http://repo.rumpkernel.org/}, and also from 3rd parties.
+
+As an example of a hypercall, we consider allocating memory from the host.
+A hypercall is the only way that a rump kernel can allocate memory at
+runtime.  Notably, though, in the fastpath case the hypercall is used
+to allocate page-sized chunks of memory, which are then dosed out by
+the pool and slab allocators in the rump kernel.  The signature of the memory
+allocation hypercall is the following:
+
+{\small
+\begin{verbatim}
+int	rumpuser_malloc(size_t howmuch, int alignment, void **retp);
+\end{verbatim}}
+
+If a hypercall can fail, its return type is \texttt{int}, and it returns
+0 for success or an error code.  If a hypercall cannot fail, it is of
+type \texttt{void}.  If successful, the memory allocation hypercall will have
+allocated \texttt{howmuch} bytes of memory and returns a pointer to that
+memory in \texttt{retp}.  The pointer is guaranteed to be aligned to
+\texttt{alignment} bytes.  For example on POSIX the implementation of
+this interface is a call to \verb+posix_memalign()+ or equivalent.
+
+The header file \texttt{sys/rump/include/rump/rumpuser.h} defines the
+hypercall interface.  All hypercalls by convention begin with the string
+``rumpuser''.  This naming convention prevents hypercall interface
+references in the rump kernel from falling under the jurisdiction of
+symbol renaming and hence the hypercalls are accessible from the
+rump kernel.
+
+The hypercalls required to run rump kernels can be categorized into the
+following groups:
+
+\begin{itemize}
+\item	\textbf{initialization}: bootstrap the hypercall layer and check
+	that the rump kernel hypercall version matches a version
+	supported by the hypercall implementation.  This interface is
+	called as the first thing when a rump kernel initializes.
 \item   \textbf{memory management}: allocate aligned memory, free
 \item	\textbf{thread management}: create and join threads, TLS access
 \item   \textbf{synchronization routines}: mutex, read/write lock,
-	condition variable.  This class is illustrated in
-	Figure~\ref{fig:rulock}.
-\item   \textbf{exit}: terminate the host container.
-	In a POSIX environment depending on the parameters termination is
-	done by calling either \texttt{abort()} or \texttt{exit()}.
+	condition variable.
+\item	\textbf{time management}: get clock value, suspend execution of
+	calling thread for the specified duration
+\item	\textbf{exit}: terminate the platform.  Notably, in some
+	cases it is not possible to implement this fully, e.g. on
+	bare metal platforms without software power control.  In that
+	case, a best effort approximation should be provided.
 \end{itemize}
 
-\begin{figure}[t]
-{\tt \scriptsize
-\begin{verbatim}
-void rumpuser_mutex_init(struct rumpuser_mtx **);
-void rumpuser_mutex_init_kmutex(struct rumpuser_mtx **);
-void rumpuser_mutex_enter(struct rumpuser_mtx *);
-int  rumpuser_mutex_tryenter(struct rumpuser_mtx *);
-void rumpuser_mutex_exit(struct rumpuser_mtx *);
-void rumpuser_mutex_destroy(struct rumpuser_mtx *);
-struct lwp *rumpuser_mutex_owner(struct rumpuser_mtx *);
-
-void rumpuser_rw_init(struct rumpuser_rw **);
-void rumpuser_rw_enter(struct rumpuser_rw *, int);
-int  rumpuser_rw_tryenter(struct rumpuser_rw *, int);
-void rumpuser_rw_exit(struct rumpuser_rw *);
-void rumpuser_rw_destroy(struct rumpuser_rw *);
-int  rumpuser_rw_held(struct rumpuser_rw *);
-int  rumpuser_rw_rdheld(struct rumpuser_rw *);
-int  rumpuser_rw_wrheld(struct rumpuser_rw *);
-
-void rumpuser_cv_init(struct rumpuser_cv **);
-void rumpuser_cv_destroy(struct rumpuser_cv *);
-void rumpuser_cv_wait(struct rumpuser_cv *, struct rumpuser_mtx *);
-int  rumpuser_cv_timedwait(struct rumpuser_cv *, struct rumpuser_mtx *,
-                           int64_t, int64_t);
-void rumpuser_cv_signal(struct rumpuser_cv *);
-void rumpuser_cv_broadcast(struct rumpuser_cv *);
-int  rumpuser_cv_has_waiters(struct rumpuser_cv *);
-\end{verbatim}}
-\caption[Hypercall locking interfaces]{\textbf{Hypercall locking interfaces}.
-These interfaces use opaque lock data types to map NetBSD kernel locking
-operations to hypervisor operations.
-}
-\label{fig:rulock}
-\end{figure}
-
-Strictly speaking, the necessity of thread support and locking
-depends on the drivers being executed.  We offer the following
-anecdote and discussion.  At one point when working on rump kernel
-support, support for \textit{gdb} in NetBSD was broken so that
-threaded programs could not be single-stepped (the problem has
-since been fixed).  As a way to work around the problem, the variable
-\verb+RUMP_THREADS+ was created.  If it is set to \texttt{0}, the
-rump kernel silently ignores kernel thread creation requests.
-Despite the lack of threads, for example file system drivers still
-function, because they do not directly depend on worker threads.
-The ability to run without threads allowed attaching the broken debugger
-to rump kernels and single-stepping them.
-
-The following rumpuser interfaces called from a rump kernel can
-provide added functionality.  Their implementation is optional.
+There are also a number of optional hypercalls, which are not strictly
+speaking required in all cases, but are nevertheless part of core
+functionality:
 
 \begin{itemize}
-\item   \textbf{host file access and I/O}: open, read/write.  Host I/O
-	is necessary if any host resources are to be accessed via
-	files.  Examples include accessing a file containing a file
-	system image or accessing a host device via \texttt{/dev}.
-\item   \textbf{I/O multiplexing}: strictly speaking, multiplexing
-	operations such as \texttt{poll()} can be handled with
-	threads and synchronous I/O operations.  However, it is
-	often more convenient to multiplex, and additionally it
-	has been useful in working around at least one host
-	system bug\footnote{
-		rev 1.11 of \texttt{sys/rump/net/lib/libvirtif/if\_virt.c}.
-	}.
-\item   \textbf{scatter-gather I/O}: can be used for optimizing
-	the virtual network interface to transmit data directly
-	from \textit{mbufs}\cite{stevens:tcpip2}.
-\item   \textbf{symbol management and external linking}: this is
-	akin to the task of a bootloader/firmware in a regular
-	system, and is required only if dynamically extending the
-	rump kernel is desired (see Section~\ref{sect:extending}).
-\item   \textbf{host networking stack access}: this is necessary
-	for the \textit{sockin} protocol module
-	(Section~\ref{sect:networking}).
 \item   \textbf{errno handling}: If system calls are to be made,
 	the hypervisor must be able to set a host thread-specific
 	\textit{errno} so that the client can read it.
 	Note: errno handling is unnecessary if
 	the clients do not use the rump system call API.
-\item   \textbf{putchar}: output character onto console.  Being
+\item	\textbf{putchar}: output character onto console.  Being
 	able to print console output is helpful for debugging purposes.
 \item	\textbf{printf}: a printf-like call.  see discussion below.
 \end{itemize}
@@ -602,11 +578,10 @@ thread context.  This check maps to consulting the host's thread
 local storage with a hypercall.  If a value is set, it is used and
 the entrypoint can move to scheduling a CPU.
 
-In case an implicit thread is required, it is necessary to create
-one.  We use the system thread \texttt{lwp0} as the bootstrap
+In case an implicit thread is required, we create one.
+We use the system thread \texttt{lwp0} as the bootstrap
 context for creating the implicit thread.  Since there is only one
-instance of this resource, it may be used only by a single consumer
-at a time, and must be locked before use.  After a lock on
+instance of this resource, it must be locked before use.  After a lock on
 \texttt{lwp0} has been obtained, a CPU is scheduled for it.  Next,
 the implicit thread is created and it is given the same CPU
 we obtained for \texttt{lwp0}.  Finally, \texttt{lwp0} is unlocked
@@ -616,7 +591,8 @@ The exit point is the converse: in case we were using a bound
 thread, just releasing the CPU is enough.  In case an implicit
 thread was used it must be released.  Again, we need a thread
 context to do the work and again we use \texttt{lwp0}.  A critical
-detail is noting the resource acquiry order: the CPU must be
+detail is noting the resource acquiry order which must be the same
+as the one used at the entry point.  The CPU must be
 unscheduled before \texttt{lwp0} can be locked.  Next, a CPU
 must be scheduled for \texttt{lwp0} via the normal path.  Attempting
 to obtain \texttt{lwp0} while holding on to the CPU may lead to a
@@ -625,7 +601,7 @@ deadlock.
 Instead of allocating and free'ing an implicit context at every
 entry and exit point, respectively, a possibility is to cache them.
 Since we assume that all performance-conscious clients use bound
-threads, caching would add unwarranted complexity to the code.
+threads, caching would add unwarranted complexity.
 
 \begin{figure}[t]
 {\tt \scriptsize
@@ -666,7 +642,7 @@ rump_unschedule()
         }
 }
 \end{verbatim}}
-\caption[rump kernel entry/exit pseudocode]{\textbf{rump kernel entry/exit pseudocode}.
+\caption[Rump kernel entry/exit pseudocode]{\textbf{Rump kernel entry/exit pseudocode}.
 The entrypoint and exitpoint are \texttt{rump\_schedule()} and
 \texttt{rump\_unschedule()}, respectively.  The assignment of a
 CPU and implicit thread context are handled here.
@@ -704,7 +680,7 @@ To optimize the multiprocessor case, we developed an improved CPU
 scheduling algorithm.
 
 \begin{figure}[h!]
-\includegraphics[width=10cm]{sched1}
+\includegraphics[width=10cm]{imgs/sched1}
 \caption[System call performance using the trivial CPU scheduler]{
 \textbf{System call performance using the trivial CPU scheduler.}
 While a system call into the rump kernel is faster in a single-threaded
@@ -717,7 +693,7 @@ CPU scheduler presented later.
 
 \subsubsection*{Improved algorithm}
 
-The purpose of a rump CPU scheduling algorithm is twofold: first,
+The purpose of a rump kernel CPU scheduling algorithm is twofold.  First,
 it ensures that at most one thread is using the CPU at any point
 in time.  Second, it ensures that cache coherency is upheld.  We
 dissect the latter point further.  On a physical system, when
@@ -890,7 +866,7 @@ weaker with two CPUs.  Finally, the jitter we set out to eliminate
 has been eliminated.
 
 \begin{figure}[t]
-\includegraphics{sched2}
+\includegraphics{imgs/sched2}
 \caption[System call performance using the improved CPU scheduler]{
 \textbf{System call performance using the improved CPU scheduler.}
 The advanced rump kernel CPU scheduler is lockless and cache conscious.
@@ -945,9 +921,9 @@ minimal amount of work for acknowledging the hardware.  They then
 schedule the bulk work to be done in a soft interrupt (\textit{softint})
 handler at a time when the OS deems suitable.
 
-As mentioned in Section~\ref{sect:preempt}, we implement hardware
-interrupts as host threads which schedule a rump kernel CPU like
-other consumers, run the handler, and release the CPU.  The only
+As mentioned in Section~\ref{sect:preempt}, we implement
+interrupts as threads which schedule a rump kernel CPU,
+run the handler, and release the CPU.  The only
 difference to a regular system is that interrupts are scheduled
 instead of preempting the CPU.
 
@@ -962,24 +938,27 @@ them cheap:
 	started.  Multiple outstanding softints will be queued
 	until the currently running one has finished.
 
-\item   Softints may block briefly to acquire a short-term lock,
-	but should not sleep.  This property is a corollary from the previous
-	property.
+\item   Softints may block briefly to acquire a short-term lock (mutex),
+	but may not sleep.  This property is a corollary of the
+	previous property.
 
 \item   Softint handlers must run on the same CPU they were scheduled
-	on.  This property relaxes cross-CPU cache effects and locking
-	requirements.
+	to.  By default, softints are scheduled on the calling CPU.
+	However, to distribute interrupt load, NetBSD also allows
+	scheduling softints to other CPUs.  Regardless, once the
+	handler has been scheduled, it runs entirely on the
+	scheduled CPU.
 
-\item   A softint may run only after the hardware interrupt has
-	completed execution.  That is to say, the softint handler
+\item   A softint may run only after the hardware interrupt
+	finishes.  That is to say, the softint handler
 	may not run immediately after it is scheduled, only when
 	the hardware interrupt handler that scheduled it has
 	completed execution.
 \end{enumerate}
 
-Although in a rump kernel even ``hardware'' interrupts are essentially
-software interrupts due to them being scheduled, a fair amount of
-code in NetBSD assumes that softints are supported.  For example,
+Although in a rump kernel even ``hardware'' interrupts are
+already scheduled, a fair amount of
+code in NetBSD assumes that softint semantics are supported.  For example,
 the callout framework~\cite{costello:callout} schedules soft
 interrupts from hardware clock interrupts to run periodic tasks
 (used \eg by TCP timers).
@@ -993,14 +972,24 @@ code first schedules the softint and only later adds the frame to the
 processing queue.  When softints were implemented as regular threads, the
 host could run the softint thread before the Ethernet interrupt handler
 had put the frame on the processing queue.  If the softint ran before the
-packet was queued, the packet would not be delivered until the next
-incoming packet was handled.
+packet was queued, the packet would not be handled until the next
+incoming packet.
 
 Soft interrupts are implemented in
-\texttt{sys/rump/librump/rumpkern/intr.c} according to the principles
-we listed earlier.  The standard NetBSD implementation was not
-usable in a rump kernel since that implementation is based on direct
-interaction with the NetBSD scheduler.
+\texttt{sys/rump/librump/rumpkern/intr.c}.
+The NetBSD implementation was not usable
+for rump kernels since that implementation is based on interaction
+with the NetBSD scheduler.  Furthermore, the NetBSD implementation
+uses interprocess interrupts (IPIs) to schedule softints onto other
+CPUs.  Rump kernels do not have interrupts or interprocessor interrupts.
+Instead, a helper thread is used.
+When scheduling a softint onto another rump kernel CPU, the helper
+thread schedules itself onto that virtual CPU and schedules the softint like
+for a local CPU.  While that
+approach is not as performant as using IPIs, our assumption is that in
+high-performance computing the hardware interrupt is already
+scheduled onto the CPU where the work should be handled, thereby making
+the cost of scheduling a softint onto another CPU a non-issue.
 
 
 \subsection{Virtual Memory Subsystem}
@@ -1012,9 +1001,9 @@ rump kernel and its clients are managed by their respective hosts,
 the virtual memory subsystem is conceptually exposed throughout
 the kernel.  For example, file systems are tightly built around
 being able to use virtual memory subsystem data structures to cache
-file data.  To illustrate, the standard way the kernel reads data
-from a file system is to memory map the file, access the mapped
-range, and possibly fault in missing data~\cite{silvers:ubc}.
+file data.  To illustrate, consider the standard way the kernel reads
+data from a file system: memory map the file, access the mapped range,
+and possibly fault in missing data~\cite{silvers:ubc}.
 
 Due to the design choice that a rump kernel does not use (nor
 require) a hardware MMU, the virtual memory subsystem implementation
@@ -1039,8 +1028,8 @@ vmpage} data structure correspond with hardware pages\footnote{
 	create logical 4kB pages to minimize management
 	overhead.
 }.
-Since the rump kernel does not interface with  memory management
-hardware, the size of the memory page is merely a programmatical
+Since the rump kernel does not interface with the MMU,
+the size of the memory page is merely a programmatical
 construct: the kernel hands out \textit{physical} memory in multiples
 of the page size.  In a rump kernel this memory is allocated from
 the host and since there is no memory
@@ -1067,36 +1056,6 @@ whenever a lookup is done, the page is deemed as accessed.
 
 \subsubsection{Page Remapping}
 
-A regular NetBSD kernel has the ability to interact with the MMU and
-map physical pages to virtual addresses~\footnote
-{
-	NetBSD itself does not run on hardware without a MMU.
-}.
-Since a rump kernel allocates only anonymous memory from the host,
-it cannot ask the host to remap any of its allocations at least on
-a POSIX system --- there is no interface for mapping anonymous memory
-in multiple places.  Usermode operating systems typically use a
-memory mapped file to represent the physical memory of the virtual
-kernel~\cite{dike:uml,eco:vkernel}.  The file acts as a handle and
-can be mapped to the location(s) desired by the usermode kernel
-using the \texttt{mmap()} system call.  The DragonFly usermode
-\textit{vkernel} uses special host system calls to make the host kernel
-execute low level mappings~\cite{eco:vkernel}.
-
-Using a file-backed solution is in conflict with the lightweight
-fundamentals of rump kernels.  First, the file must be created at
-a path specified either by a configuration option or by a system
-guess.  Furthermore, it disrupts the dynamic memory principle we
-have laid out.  While it is relatively simple to extend the file
-to create more memory on demand, it is difficult to
-truncate the file in case the memory is no longer needed
-because free pages will not automatically reside in a contiguous
-range at the end of the file.  Finally, the approach requires
-virtual memory mapping support from the host and limits the
-environments a rump kernel can be theoretically hosted in.  Therefore,
-we should critically examine if memory mapping capability is really
-needed in a rump kernel.
-
 In practice, the kernel does not map physical pages in driver code.
 However, there is one exception we are interested in: the file
 system independent vnode pager.  We will explain the situation in
@@ -1106,7 +1065,8 @@ a file which is the size of three memory pages.  The content for
 file offset \texttt{0x0000-0x0FFF} might be in page~\texttt{X},
 \texttt{0x1000-0x1FFF} in page~\texttt{X-1} and
 \texttt{0x2000-0x2FFF} in page~\texttt{X+1}.  In other words,
-reading and writing a file is a scatter-gather operation.
+reading and writing a file is a scatter-gather operation
+with respect to memory addresses.
 When the standard vnode pager
 (\verb+sys/miscfs/genfs/genfs_io.c+) writes contents from memory
 to backing storage, it first maps all the pages belonging to the
@@ -1136,26 +1096,8 @@ feature, there are three options for dealing with \verb+uvm_pagermapin()+:
 	consecutive addresses.
 
 \item   Accept that memory remapping support is necessary in a rump
-	kernel and handle the vnode pager using \texttt{mmap()}
-	and \texttt{munmap()}.
+	kernel.
 \end{enumerate}
-
-When comparing the first and the second option, the principle used
-is that memory I/O is several orders of magnitude faster than device
-I/O.  Therefore, anything which affects device I/O should be avoided,
-especially if it might cause extra I/O operations and thus option~1
-is preferable over option~2.
-
-To evaluate the first option against third option, we simulated
-pager conditions and measured the amount of time it takes to
-construct a contiguous 64kB memory window out of non-contiguous
-4kB pages and to write the window out to a file backed by a memory
-file system.  The result for 1000 loops as a function of
-non-contiguous pages is presented in Figure~\ref{fig:copyvsmmap}.
-We conclude that not only is copying the technologically preferred
-option since it avoids the need for memory mapping support on the
-host, it is also several times faster than
-\texttt{mmap()}/\texttt{munmap()} pairs.
 
 It should be noted that a fourth option is to implement a separate
 vnode pager which does not rely on mapping pages.  This option was our
@@ -1168,8 +1110,30 @@ the vnode pager reflects our premise for the entire work: it is
 easy to write superficially working code, but getting all corner
 cases right for complicated drivers is extremely difficult.
 
+So, which of the three options is the best?  When comparing the first
+and the second option, the principle used is that memory I/O is several
+orders of magnitude faster than device I/O.  Therefore, anything which
+affects device I/O should be avoided, especially if it might cause extra
+I/O operations and thus option~1 is preferable over option~2.
+
+To evaluate the first option against third option, let us ignore
+MMU-less environments where page remapping is not possible, and
+consider an environment where it is possible albeit clumsy: userspace.
+Usermode operating systems typically use a memory mapped file to represent
+the physical memory of the virtual kernel~\cite{dike:uml,eco:vkernel}.
+The file acts as a handle and can be mapped to the location(s) desired by
+the usermode kernel using the \texttt{mmap()} system call.  The DragonFly
+usermode \textit{vkernel} uses special host system calls to make the
+host kernel execute low level mappings~\cite{eco:vkernel}.
+
+We simulated pager conditions and measured the amount of time it takes to
+construct a contiguous 64kB memory window out of non-contiguous 4kB pages
+and to write the window out to a file backed by a memory file system.
+The result for 1000 loops as a function of non-contiguous pages is
+presented in Figure~\ref{fig:copyvsmmap}.
+
 \begin{figure}[t]
-\includegraphics{copyvsmmap}
+\includegraphics{imgs/copyvsmmap}
 \caption[Performance of page remapping vs. copying]{
 \textbf{Performance of page remapping vs. copying.}
 Allocating a pager window from anonymous memory and copying file
@@ -1180,6 +1144,14 @@ pages.  With remapping, each disjoint region requires a separate
 call to \texttt{mmap()}.}
 \label{fig:copyvsmmap}
 \end{figure}
+
+The conclusion is that without direct access to a MMU, page remapping is
+either slower than memory copy or impossible.  The downside of memory
+copy is that in low-memory environments you need twice the amount of
+memory of the largest allowed pager window size.  Furthermore, the
+pagedaemon (Section~\ref{sect:pagedaemon}) needs the window's worth of reserved memory to ensure that
+it is possible to flush out pages and release memory.  The simple choice
+is to mitigate the problems by restricting the pager window size.
 
 \subsubsection{Memory Allocators}
 \label{sect:malloc}
@@ -1208,60 +1180,34 @@ memory from the allocators.  We have extracted the implementations
 for these allocators from the standard NetBSD kernel and provide
 them as part of the rump kernel base.
 
-An exception is the 4.3BSD/4.4BSD \texttt{malloc()}~\cite{mckusick:malloc};
-we stress that in this section \textit{malloc} refers to the
-in-kernel implementation of the allocator.  In contrast to the
-dynamic nature of the abovementioned allocators, the malloc
-implementation uses a single contiguous memory range for all
-allocations (\verb+kmem_map+).  The size of this range is calculated
-from total system memory and the range is allocated at system
-bootstrap time.  In a rump kernel this behavior is not desirable,
-since it sets static limits for the system.  Due to this reason we
-did not extract malloc and instead reimplemented the interface by
-relegating requests to the hypercall layer.  Since malloc is being
-retired in NetBSD in favor of the newer style allocators, we did
-not see it necessary to spend effort on being able to extract the
-implementation instead of using the hypervisor's memory allocator
-directly.  Notably, the situation with malloc may need to be revisited
-if rump kernels are to be ported to a host which does not provide
-a general purpose memory allocator in itself and malloc is not
-fully retired by then.
-
 \subsubsection{Pagedaemon}
+\label{sect:pagedaemon}
 
 The NetBSD kernel uses idle memory for caching data.  As long as
-free memory is available, it will be used for caching.  The pagedaemon
+free memory is available, it will be used for caching.  NetBSD's pagedaemon
 serves the purpose of pushing out unnecessary data to recycle pages
-when memory is scarce.  A mechanism is required to keep long-running
-rump kernels from consuming all memory available from the host for
-caching.  The choices are to either eliminate caching and free
-memory immediately after it has been used, or to create a pagedaemon
-which can operate despite memory access information not being
-available with the help of a MMU.  Since eliminating caching is
-undesirable for performance reasons, we chose the latter option.
+when memory is scarce.  A mechanism is required to keep long-running rump
+kernels from consuming all memory for caching.  The choices are to either
+eliminate caching and free memory immediately after it has been used, or
+to create a pagedaemon which can operate despite memory access information
+not being available with the help of a MMU.  Since eliminating caching
+is undesirable for performance reasons, we chose the latter option.
 
-A rump kernel can be configured with either a specified amount of memory
-or an unlimited amount of memory.  In the former case the rump
-kernel will disallow runtime memory allocations going over the
-limit.  When 90\% of the allocation limit has been reached, the
-pagedaemon will be invoked to push out memory content which has
-not been used recently.  If no limit is specified, a rump kernel
-can grow up to potentially consuming all memory and swap space on
-the host.  The latter is the default, since in our experience it
-suits all but a few use cases.  For example, in virtually all unit
-test use cases the memory limit has no consequence, since a
-short-lived rump kernel will not have a chance to grow large enough
-for it to matter.  Furthermore, a POSIX per-process memory size
-limit (\textit{rlimit}) will usually be hit before one process can
-have a serious impact on the host.  Hitting this limit causes the memory
-allocation hypercall to fail.  If the memory allocation hypercall
-fails, the rump kernel treats the situation the same as reaching the
-soft-configured limit and invokes the pagedaemon, which will hopefully
-flush out the cache and allow the current allocation to succeed.
+Typically, a system will have a specific amount of memory assigned to it.
+A straightforward example is a system running directly on hardware.
+While we could always require that the amount of memory be specified, that
+would introduce a default and configurable which is not always necessary.  Since host memory is dynamically
+allocated using hypercalls, we can observe that in some cases we simply
+do not have to configure the amount of available memory.  For example,
+short-lived test cases for kernel drivers running on a userspace host do not need one.
+For the rest of the discussion, we do assume that we have an ``inflexible''
+use case and host, and do need to configure the amount of available
+memory.
 
-To free memory, the pagedaemon must locate memory resources which
-are not in use and release them.  There are fundamentally two types
-of memory: pageable and wired.
+When the available memory is close to being exhausted, the rump kernel
+invokes the pagedaemon, which is essentially a kernel thread, to locate
+and free memory resources which are least likely to be used in the near future.
+There are fundamentally two types of memory: pageable and wired.
 
 \begin{itemize}
 \item   \textbf{Pageable memory} means that a memory page can be
@@ -1283,17 +1229,27 @@ of memory: pageable and wired.
 	file system.
 
 \item   \textbf{Wired memory} is non-pageable, \ie it is always present
-	and mapped.  Still, it is critical to note that the
+	and mapped.  Still, it needs to be noted that the
 	\textit{host} can page memory which is wired in the rump
-	kernel barring precautions such as a \texttt{mlock()}
-	hypercall.  Most wired memory in NetBSD is in one form or
-	another allocated from a pool as was described in
-	Section~\ref{sect:malloc}.  During memory shortage, the
-	pagedaemon requests the allocators to return unused pages
-	back to the system.
+	kernel barring precautions such as a hypercall invoking \texttt{mlock()}
+	--- DMA-safe memory notwithstanding (Section~\ref{sect:pci}),
+	this paging has no impact on the rump kernel's correctness.
+	During memory shortage, the pagedaemon requests the allocators
+	to return unused pages back to the system.
 \end{itemize}
 
-\begin{table}
+The pagedaemon is implemented in the \verb+uvm_pageout()+ routine
+in the source file \texttt{sys/rump/librump/rumpkern/vm.c}.
+The pagedaemon is invoked when memory use exceeds the critical threshold, and
+additionally when the memory allocation hypercall fails.
+The pagedaemon releases memory in stages, from
+the ones most likely to bring benefit to the least likely.  The
+use case the pagedaemon was developed against was the ability to
+run file systems with a rump kernel with limited memory.  Measurements
+showing how memory capacity affects file system performance are
+presented in Table~\ref{tab:fileio}.
+
+\begin{table}[]
 \begin{tabular}{|l|l|}
 \hline
 rump kernel memory limit & relative performance \\
@@ -1316,17 +1272,6 @@ processing at full media speed.
 }
 \label{tab:fileio}
 \end{table}
-
-The pagedaemon is implemented in the \verb+uvm_pageout()+ routine
-in the source file \texttt{sys/rump/librump/rumpkern/vm.c}.
-As mentioned earlier, it is invoked whenever 90\% of the memory
-limit has been allocated from the host, or when a memory allocation
-hypercall fails.  The pagedaemon releases memory in stages, from
-the ones most likely to bring benefit to the least likely.  The
-use case the pagedaemon was developed against was the ability to
-run file systems with a rump kernel with limited memory.  Measurements
-showing how memory capacity affects file system performance are
-presented in Table~\ref{tab:fileio}.
 
 Since all pages managed by the VM are dynamically allocated and
 free'd, shrinking the virtual kernel or allowing it to allocate
@@ -1379,8 +1324,8 @@ proceed to free pages.  To remedy the problem in virtual multiprocessor
 setups, we implemented a check to see if the object lock holder is
 running on another virtual CPU.  If the pagedaemon was unable to
 free memory, but it detects an object lock holder running on another
-CPU, the pagedaemon thread sleeps only for one nanosecond.  This
-short sleep usually gives the consumer a chance to release the object
+CPU, the pagedaemon thread yields.  This
+yield usually gives the consumer a chance to release the object
 lock so that the pagedaemon can proceed to free memory without a full
 sleep like it would otherwise do in a deadlock situation.
 
@@ -1403,24 +1348,26 @@ deems a thread to be unrunnable, it has two options: 1) spin until the
 host decides to schedule another rump kernel thread 2) notify the host
 that the current thread is unrunnable until otherwise announced.
 
-The latter option is desirable since it saves resources.  However,
-no such standard interface exists on a standard POSIX host.  The
-closest option is to suspend for an arbitrary period (yield, sleep,
-etc.).  Instead, we observe that the NetBSD kernel and pthread
-synchronization primitives are much alike.  We define a set of
-hypercall interfaces which provide the mutex, read/write lock and
-condition variable primitives.  Where the interfaces do not map
-1:1, such as with the \texttt{ltsleep()} and \texttt{msleep()}
-interfaces, we use the hypercall interfaces to emulate them
+Option 2 is desirable since it saves resources.  However, no such
+standard interface for implementing it exists on for example a POSIX host.  The closest option
+would be to suspend for an arbitrary period (yield, sleep, etc.).
+To solve the problem, we define a
+set of hypercall interfaces which provide the mutex, read/write lock
+and condition variable primitives.  On for example POSIX hosts, the
+implementations of those hypercalls are simply thin pass-through layers
+to the underlying locking primitives (\verb+pthread_mutex_lock()+ etc.).
+Where the rump kernel interfaces do not map
+1:1, such as with the \texttt{msleep()}
+interface, we emulate the correct behavior using the hypercall interfaces
 (\verb+sys/rump/librump/rumpkern/ltsleep.c+).
 
 As usual, for a blocking hypercall we need to unschedule and
-reschedule the rump virtual CPU.  For condition variables making the
+reschedule the rump kernel virtual CPU context.  For condition variables making the
 decision to unschedule is
 straightforward, since we know the wait routine is going to block,
 and we can always release the CPU before the hypervisor calls libpthread.
-For mutexes and read/write locks we do not know a priori if we are
-going to block.  However, we can make a logical guess: code should
+With some underlying locking primitives (\eg pthread), for mutexes and read/write locks we do not know a priori if we are
+going to block.  However, in those cases we can make a logical guess: code should
 be architectured to minimize lock contention, and therefore not
 blocking should be a more common operation than blocking.  We first
 call the \textit{try} variant of the lock operation.  It does a
@@ -1438,7 +1385,7 @@ Passive serialization~\cite{hennessy:passiveser} is essentially a
 variation of a reader-writer lock where the read side of the lock is
 cheap and the write side of the lock is expensive, \ie the lock is
 optimized for readers.  It is called passive serialization because
-readers do not take an atomic platform level lock.  The lack of a
+readers do not take an atomic hardware level lock.  The lack of a
 read-side lock is made up
 for by deferred garbage collection, where an old copy is released
 only after it has reached a \textit{quiescent state}, \ie there are
@@ -1458,10 +1405,8 @@ It is essentially a reader/writer locking facility with a lockless
 fastpath for readers.  The write locks are expensive and
 require cross calling other CPUs and running code on them.
 
-Despite the lack of a locking primitive which is implemented using
-passive synchronization, passive synchronization is still used in
-the NetBSD kernel.  One example which was present in NetBSD 5.99.48 is the
-dynamic loading and unloading of system calls in
+One example of where NetBSD uses passive synchronization is in
+the loading and unloading of system calls in
 \verb+sys/kern/kern_syscall.c+.  These operations require atomic
 locking so as to make sure no system call is loaded more than once,
 and also to make sure a system call is not unloaded while
@@ -1602,8 +1547,8 @@ here~\cite{desnoyers:phd}).  In fact, the best performing userspace
 implementation is one which requires threads to inform the RCU
 manager when they enter a quiescent state where they will not use
 any RCU-related resources.  Since a rump kernel has a CPU model,
-this quiescent state is the time after a thread has run on all
-CPUs.  In the syscall example this was accomplished by running the
+this quiescent state reached when there has been scheduler activity on
+all rump kernel CPUs.  In the syscall example this was accomplished by running the
 CPU crosscall (Figure~\ref{fig:sysxcall}).  Therefore, no modification is
 required as opposed to what is required for pure userspace applications to
 support the quiescence based RCU userspace approach~\cite{desnoyers:urcu}.
@@ -1633,7 +1578,7 @@ kernels in the file \verb+sys/rump/librump/rumpkern/locks_up.c+~\footnote
 }.
 This implementation can be used only in rump kernels with
 a single virtual CPU.  As explained above, this implementation
-does not call the host pthread routines unless it needs to arrange
+does not use the synchronization hypercalls unless it needs to arrange
 for a thread to sleep while waiting for a lock to be released.
 
 To see how effective uniprocessor-only locking is, we measured the
@@ -1642,8 +1587,8 @@ tmpfs memory file system.  The results are presented in
 Figure~\ref{fig:tmpfscreate}.  Next, we analyze the results.
 
 \begin{figure}[t]
-\includegraphics{tmpfscreate}
-\includegraphics{tmpfscreate2}
+\includegraphics{imgs/tmpfscreate}
+\includegraphics{imgs/tmpfscreate2}
 \caption[Cost of atomic memory bus locks on a twin core host]{
 \textbf{Cost of atomic memory bus locks on a twin core host.}
 The first figure presents the raw measurements and the second figure
@@ -1816,7 +1761,7 @@ this arranging means moving the arguments that \verb+rump_sys_lseek()+ was
 called with into the fields of \verb+struct sys_lseek_args+.  The
 wrapper for lseek is presented in Figure~\ref{fig:rumpsyslseek}.
 The name of the wrapper in the illustration does not match
-\verb+rump_sys_lseek()+.
+\verb+rump_sys_lseek()+
 but the reference will be correctly translated by an alias
 in the rump system call header.  We will not go into details,
 except to say that the reason for it is to support compatibility
@@ -2119,7 +2064,8 @@ files; a feature we will look at more closely below.  In addition,
 etfs only supports reading and writing files and cannot manipulate
 the directory namespace on the host.  This I/O-oriented approach
 avoids issues such as how to map permissions on newly created hostfs
-files.
+files.  Furthermore, it makes etfs usable also on hosts which do not
+support a directory namespace.
 
 The mapping capability of etfs is hooked up to the lookup operation
 within rumpfs.  Recall, a lookup operation for a pathname will
@@ -2143,27 +2089,10 @@ The main purpose of the type mapping feature is to be able
 to present a regular file on the host as a block device in the rump
 kernel.  This mapping addresses an implementation detail in the NetBSD
 kernel: the only valid backends for disk file systems are block
-devices.  On a regular system the mapping is done using the
-\texttt{vnconfig} utility to map regular files to \texttt{/dev/vndxx}
-block device nodes which can be mounted~\footnote
-{
-	For disk images with a partition table \texttt{vnconfig}
-	provides multiple block devices in \texttt{/dev}.  The
-	\texttt{withsize} variant of the etfs interface can be used
-	to map a range of the host file corresponding to the desired
-	partition.  The \textit{p2k} and \textit{ukfs} libraries'
-	interfaces for mounting disk file systems provide support
-	for this variant (manual pages at \pageref{manpage:p2k.3} and
-	\pageref{manpage:ukfs.3}, respectively).
-}.
-Avoiding \texttt{vnconfig} on the host is beneficial since using
-it requires root privileges regardless of the permissions of the
-backing file.  With the etfs interface, a rump kernel requires only
-the minimal host privileges which allow it to read or write the
-backing file and therefore more finegrained access control is
-possible.
+devices.
 
-In addition to mapping files, it is possible to map directories.
+Assuming that the host supports a directory namespace,
+it is also possible to map directories.
 There are two options: a single-level mapping or the mapping of
 the whole directory subtree.  For example, if \verb+/rump_a+ from
 the host is directory mapped to \verb+/a+ in the rump kernel, it
@@ -2177,6 +2106,21 @@ The original use case for the directory mapping functionality was
 to get the kernel module directory tree from \texttt{/stand} on
 the host mapped into the rump kernel namespace so that a rump kernel
 could read kernel module binaries from the host.
+
+\subsubsection{External Storage}
+
+Another special feature of rumpfs is the possibility to attach external
+storage to regular files.  This external storage is provided in the
+form of memory, and is made available via files in a zero-copy fashion.
+The intent is to allow rump kernels to provide file content
+without having to rely on the presence of any block I/O device.
+The content itself can be linked into the data segment of the binary
+at the time that the binary is built.
+External storage is attached by opening a writable file and calling
+\verb+rump_sys_ioctl(fd, RUMP_FCNTL_EXTSTORAGE_ADD, ...)+.
+Adding external storage is limited to local clients, as pointers
+provided by remote clients are meaningless in this context.
+
 
 \subsection{Attaching Components}
 
@@ -2200,7 +2144,7 @@ discussion with kernel modules.
 In NetBSD terminology, a driver which can be loaded and unloaded
 at runtime is said to be \textit{modular}.  The loadable binary
 image containing the driver is called a \textit{kernel module}, or
-\textit{module} for short.  We adapt the terminology for our
+\textit{module} for short.  We adopt the terminology for our
 discussion.
 
 The infrastructure for supporting modular drivers on NetBSD has
@@ -2217,7 +2161,7 @@ been available since NetBSD~5.0~\footnote
 Some drivers offered by NetBSD are modular, and others are being
 converted.  A modular driver knows how to attach to the kernel and detach
 from the kernel both when it is statically included and when it is loaded
-at runtime.
+at runtime.  A non-modular driver does not know.
 
 NetBSD divides kernel modules into three classes depending on their
 source and when they are loaded.  These classes are summarized in
@@ -2227,7 +2171,7 @@ into memory at the same time as it loads the kernel image.  These modules
 must later be linked by the kernel during the bootstrap process.  Finally,
 at runtime modules must be both loaded and linked by the kernel.
 
-\begin{table}
+\begin{table}[]
 \begin{tabular}{|l|l|l|l|}
 \hline
 source & loading & linking & initiated by \\
@@ -2268,16 +2212,19 @@ monolithic kernel build.  Unloading a kernel module is essentially
 reversing the steps.
 
 We divide loading a module into a rump kernel in two separate cases
-depending on a pivot point in the execution of the hosting process: the bootstrapping of the
-rump kernel by calling \verb+rump_init()+.  Both the linking of the rump
-kernel binary with \texttt{cc~...~-lrumplibs} and loading libraries with
-\texttt{dlopen()} before bootstrap are equivalent operations from our
-perspective.  Any set of components including the factions and the base
-may be added using the above methods, provided that driver dependencies
-are satisfied.  After the rump kernel has been bootstrapped only modular
-drivers may be loaded.  This limitation exists because after bootstrap
-only drivers which have explicit support for it can be trusted to
-correctly plug themselves into a running kernel.
+depending on a pivot point in the execution: the bootstrapping of the
+rump kernel by calling \verb+rump_init()+.  The officially supported way
+of including modules in rump kernels is to have them loaded and linked
+(\ie steps 1+2) before \verb+rump_init()+ is called.  This may be done
+either by linking them into a static image, or, on hosts where dynamic
+linking is supported, loading and linking the component after \verb+main()+
+is called but before \verb+rump_init()+ is called.  Modules loaded that
+way are essentially builtin modules.
+
+We also point out that on some hosts, especially userspace, it is
+possible to load components after \verb+rump_init()+ by using the host
+dynamic linker and then calling \verb+rump_pub_module_init()+.  However,
+will we not discuss the latter approach in this document.
 
 \subsubsection*{init/fini}
 
@@ -2286,177 +2233,45 @@ A NetBSD kernel module defines an init routine
 using the \verb+MODULE()+ macro.  The indicated routines attach
 and detach the module with respect to the kernel.  The \verb+MODULE()+
 macro creates a structure (\texttt{struct modinfo}) containing that
-information and places the structure into a special \verb+.rodata+
-section called \texttt{modules}.  Consulting this section allows
-the loading party to locate the init routine and finish initialization.
-The section is found at runtime by locating the \verb+__start_section+
-and \verb+__end_section+ symbols that are generated by the linker
-at the starting and ending addresses of the section.
+information.  We need to locate the structure at runtime so that the
+init routine can be run to complete module loading step ``3''.  The method
+of locating the \texttt{modinfo} structures depends on the platform.
+There are two functionally equivalent options, but they have different
+platform requirements.
 
-A regular kernel uses static linking.  When a regular kernel is linked,
-all \texttt{modules} sections are gathered into
-one in the resulting binary.  The kernel consults the contents during bootstrap
-to locate builtin modules and proceeds to initialize them.
-The bootstrap procedure iterates over all of the \texttt{modinfo} structures.  This
-approach is not directly applicable to a dynamically linked environment
-because the dynamic linker cannot generate a combined section like static
-linking can --- consider \eg how loading and unloading would affect the
-section contents at runtime.  Still we, need a mechanism for locating
-driver init routines when the rump kernel is bootstrapped.  This task of
-locating the init routines is done by the \verb+rumpuser_dl_bootstrap()+
-hypercall.  It iterates over all the dynamic shared objects present and
-gathers the contents of all the \texttt{modules} sections individually.
+\begin{enumerate}
+\item	A pointer to the structure is placed into a \verb+.rodata+ section
+	called \texttt{modules}.  At linktime, the linker generates
+	\verb+__start_section+ and \verb+__end_section+ symbols.
+	At runtime, all present modules can be found by traversing pointers
+	in the memory between these two symbols.  Notably, not all linkers
+	can be coerced into generating these symbols.
+	Furthermore, the scheme is
+	not directly compatible with dynamic linkers because a dynamic
+	linker cannot produce a global pair of such symbols -- consider
+	the scenario where libraries are loaded at runtime.  Therefore,
+	if this scheme is to be used with dynamic linking, each shared
+	object must be examined separately.
 
-A related problem we discovered was the GNU linker changing its
-behavior in generating the \verb+__start_section+ and \verb+__end_section+
-symbols.  Older versions generated them unconditionally.  In newer
-versions they are generated only if they are referenced at link
-time (the ``\textit{PROVIDE}'' mechanism).  Since individual
-components do not use these symbols, they do not get generated when
-the components are linked as shared libraries.  To address this
-regression, we created the component linker script
-\texttt{sys/rump/ldscript.rump} which forces the generation of the
-symbols in shared library components and restores desired behavior.
+\item	The structure is located via
+	\verb+__attribute__((__constructor__))+.  We cannot make any
+	assumptions about when the constructor runs, and therefore the
+	constructor only places the structure on a linked list.
+	This linked list is traversed when the rump kernel boots.
+	The constructor is a static function generated by the
+	\texttt{MODULE()} macro.  Notably, this scheme requires platform
+	support for running constructors.
+\end{enumerate}
 
-
-\subsubsection{Modules: Loading and Linking}
-
-Runtime loading and linking in a rump kernel includes two distinct
-scenarios.  First, shared objects can be loaded and linked by the
-host's dynamic linker.  Second, static objects can be loaded and
-linked by code in the rump kernel.  We will discuss both approaches
-next.
-
-\subsubsection*{Host Dynamic Linker}
-
-Using the host's dynamic linker requires that the component is in
-a format that the dynamic linker can understand.  In practice, this
-requirement means that the component needs to be a shared library
-(ELF type \verb+ET_DYN+).  All loading and linking is done by the
-host, but the init routine must be run by the rump kernel.  Revisiting
-Table~\ref{tab:kernmod}, a module loaded and linked by the host is a
-builtin module from the perspective of the kernel.
-
-Since there is no system call for informing the kernel about new
-builtin modules appearing at runtime, we defined a rump kernel
-interface for running the init routine.  The \verb+rump_pub_module_init()+
-routine takes as an argument the pointer to the beginning of the modules
-section and the number of \texttt{struct modinfo} pointers.
-An example of client side code (adapted from \texttt{lib/libukfs/ukfs.c})
-is presented in Figure~\ref{fig:dlopen}.
-
-\begin{figure}[t]
-{\tt \scriptsize  
-\begin{verbatim}
-        void *handle;
-        const struct modinfo *const *mi_start, *const *mi_end;
-        int error;
-
-        if ((handle = dlopen(fname, RTLD_LAZY|RTLD_GLOBAL)) == NULL) {
-                /* error branch */
-        }
-
-        mi_start = dlsym(handle, "__start_link_set_modules");
-        mi_end = dlsym(handle, "__stop_link_set_modules");
-        if (mi_start && mi_end) {
-                error = rump_pub_module_init(mi_start,
-                    (size_t)(mi_end-mi_start));
-                /* ... */
-        } else {
-                /* error: not a module */
-        }
-\end{verbatim}}
-\caption[Loading kernel modules with \texttt{dlopen()}]{
-\textbf{Loading kernel modules with \texttt{dlopen()}.}
-Loading is a two-part process.  First, the module is loaded and linked
-using a call to the host's \texttt{dlopen()} routine.  Second, the
-rump kernel is informed about the newly loaded module.
-}
-\label{fig:dlopen}
-\end{figure}
-
-In the monolithic kernel builtin modules cannot be unloaded
-because they are loaded as part of the kernel at system bootstrap
-time, and are not placed in separately allocated memory.  However, if
-builtin modules are loaded into a rump kernel with \texttt{dlopen()},
-it is possible to unload modules which are not busy via
-\texttt{dlclose()}.  First, the module's fini routine should be
-run so that other kernel subsystems are no longer aware of it.  For
-running the fini routine
-to be possible, we added the concept of disabling a builtin module
-to NetBSD's kernel module support.  What disabling does is run the
-fini routine of the module thereby removing the functionality from
-the kernel.  This concept is useful also outside the scope of rump
-kernels, and can for example be used to disable a driver with a
-newly discovered security vulnerability, perhaps making it possible
-to postpone the system upgrade until a suitable time.  A rump
-kernel client can disable a builtin module by calling
-\verb+rump_pub_module_fini()+.  If disabling is successful, it can
-proceed to call \texttt{dlclose()} to unload the module from memory.
-
-We stated that linking libraries with ``\verb+cc -o ... -lrumpfoo+''
-and loading them with \texttt{dlopen()} before calling \verb+rump_init()+
-are equivalent.  One detail deserves
-discussion: weak symbols.  By default, symbols in the text segment
-are resolved lazily, which means they are unresolved until they
-are first used.  To put it another way, the dynamic linker resolves a
-reference to \verb+afunction()+ only when, or rather if, it is
-called at runtime.  However, lazy resolution does not apply to
-variables, including function pointers, which are resolved immediately
-when the program is initially linked.  Any function
-pointer with the initial value pointing to a weak stub will retain
-the same value even if a strong version of the same symbol is later
-loaded with \texttt{dlopen()}.
-
-\begin{figure}[t]
-{\tt \scriptsize  
-\begin{verbatim}
-        for (i = 0; i < SYS_NSYSENT; i++) {
-                void *sym;
-
-                if (rump_sysent[i].sy_flags & SYCALL_NOSYS ||
-                    *syscallnames[i] == '#' ||
-                    rump_sysent[i].sy_call == sys_nomodule)
-                        continue;
-
-                if ((sym = rumpuser_dl_globalsym(syscallnames[i])) != NULL) {
-                        rump_sysent[i].sy_call = sym;
-                }
-        }
-\end{verbatim}}
-\caption[Adjusting the system call vector during rump kernel bootstrap]{
-\textbf{Adjusting the system call vector during rump kernel bootstrap.}
-This adjustment makes sure that all entries in the system call vector includes any
-system calls from all components which were loaded with \texttt{dlopen()}
-before the rump kernel was bootstrapped.
-}
-\label{fig:weaksysadj}
-\end{figure}
-
-Function pointers must be dynamically adjusted when the
-rump kernel is bootstrapped instead of relying on weak symbols.
-In a rump kernel, the system call vector was the main user of
-function pointers to weak symbols (the only other place is old-style
-networking soft interrupt handlers).  The bootstrap time adjustment
-of the system call vector from \texttt{sys/rump/librump/rumpkern/rump.c}
-is presented in Figure~\ref{fig:weaksysadj} (the code presented in the figure is
-slightly adjusted for presentation purposes).
-
-Since any module loaded after bootstrap must be a NetBSD kernel
-module, the weak symbol problem does not exist after bootstrap.
-Kernel modules are not allowed to rely on weak symbols.
-Each kernel module's init routine takes care of adjusting the
-necessary pointer tables, for example the syscall vector in case the
-loaded modules provide system calls.
 
 \subsubsection*{The NetBSD Kernel Linker}
 
-Using the NetBSD kernel linker means letting the code in
+Using the NetBSD kernel linker means loading the module from the
+file system after \verb+rump_init()+ and letting the code in
 \verb+sys/kern/subr_kobj.c+ handle linking.  This linker is included
-as part of the base of a rump kernel.  As opposed to the host's dynamic
-linker, the in-kernel linker supports only relocatable objects (ELF
-type \verb+ET_REL+) and does not support dynamic objects (ELF type
-\verb+ET_DYN+).
+as part of the base of a rump kernel.  The in-kernel linker supports
+only relocatable objects (with ELF, type \verb+ET_REL+), not shared
+libraries.
 
 Since linking is performed in the [rump] kernel, the [rump] kernel
 must be aware of the addresses of the symbols it exports.  For
@@ -2467,20 +2282,23 @@ regular kernel the initial symbol table is loaded at bootstrap time
 by calling the \verb+ksyms_addsyms_explicit()+ or mostly equivalent
 \verb+ksyms_addsyms_elf()+ routine.
 
-In a statically linked [rump] kernel we know the symbol addresses
-already when the executable is linked.  In a dynamically linked
-rump kernel, the exported addresses are known only at runtime after
-the dynamic linker has loaded them --- recall: shared libraries
-are position independent code and can be loaded at any address.
-During bootstrap, the symbol addresses are queried and loaded as
-part of the \verb+rumpuser_dl_bootstrap()+ hypercall.  Afterwards,
-the kernel linker maintains the symbol table when it links or
-unlinks modules.
+In the current rumpuser hypercall revision, the symbol table is populated
+by the
+\verb+rumpuser_dl_bootstrap()+ hypercall, which is always called during
+rump kernel bootstrap.  For the next hypercall revision, the plan is to
+make symbol loading a just-in-time operation which is called only if
+the in-kernel linker is used.  This change is planned because loading
+the symbol table -- and in dynamically linked environments harvesting
+it for loading -- is a time-consuming operating.  Based on experience,
+the use of the in-kernel linker is a rare operation, and unconditionally
+populating the symbol table is therefore wasteful.
 
 The in-kernel linker itself works the same way as in a regular kernel.
 Loading a module can be initiated either by a client by using the
-\texttt{modctl()} system call or by the kernel when it autoloads
-a module to transparently provide support for a requested service.
+\texttt{modctl()} system call.  Notably, the kernel module is loaded
+from the rump kernel file system namespace, so only rump kernels with
+the file system faction can support the in-kernel linker.
+
 
 \subsubsection{Modules: Supporting Standard Binaries}
 \label{sect:abicompat}
@@ -2632,30 +2450,6 @@ the translation is done in memory, duplicate files are not required.
 Also, it enables us to autoload binary modules directly from the host, as
 we describe next.
 
-\subsubsection*{Autoloading}
-
-The NetBSD kernel supports autoloading of modules for extending kernel
-functionality transparently.  To give an example, if mounting of
-an unsupported file system type is requested, the kernel will
-attempt to load a kernel module containing the appropriate driver.
-
-Since kernel modules are loaded from a file system, loading can work
-only in rump kernels with the VFS faction.  Second, the modules
-must be present in the rump kernel file system namespace.  By
-default, architectures with binary kernel module support map in
-the modules directory from the host using \textit{etfs}
-(Section~\ref{sect:etfs}).  For example, an i386 rump kernel maps in
-\texttt{/stand/i386/5.99.48/modules}.  If modules are available in
-the rump kernel file system namespace, autoloading works like on
-a regular kernel.
-
-Notably, autoloading does not depend on using modules which are
-mapped from the host's file system.  However, mapping avoids the
-extra step of having to make the module binaries visible in the
-rump kernel's file system namespace either via mounting or run-time
-copying, and is therefore a good choice for the default mode of
-operation.
-
 \subsubsection{Rump Component Init Routines}
 
 In the previous section we discussed the attachment of drivers that
@@ -2679,13 +2473,12 @@ A rump component init routine may be created to augment the
 module init routine.
 
 By convention, we place the rump component init routines in the
-component's source directory in a file called \texttt{component.c}.
+component's source directory in a file called \verb+$name_component.c+,
+\eg \verb+bpf_component.c+.
 To define an init routine,  the component should use the
 \verb+RUMP_COMPONENT()+ macro.  The use of this macro serves the
 same purpose as the \verb+MODULE()+ macro and ensures that the init
 routine is automatically called during rump kernel bootstrap.
-The implementation places a descriptor structure in a \texttt{.rodata}
-section called \verb+rump_components+.
 
 The \verb+RUMP_COMPONENT()+ macro takes as arguments a single
 parameter indicating when the component should be initialized
@@ -2694,15 +2487,15 @@ This specifier is required because of interdependencies of components
 that the NetBSD kernel code imposes.  For example, the networking
 domains must be attached before interfaces can be configured.  It
 is legal (and sometimes necessary) for components to define several init
-routines with different configuration times.  We found it necessary
-to define eight different levels.  They are presented in
+routines with different configuration times.
+The init level parameters are listed in
 Table~\ref{tab:compinit} in order of runtime initialization.  Notably, the
 multitude of networking-related initialization levels conveys the
 current status of the NetBSD TCP/IP stack: it is not yet modular --- a
 modular TCP/IP stack would encode the cross-dependencies in the
 drivers themselves.
 
-\begin{table}
+\begin{table}[]
 \begin{tabular}{|l|p{8cm}|}
 \hline
 level & purpose \\
@@ -2725,23 +2518,43 @@ level & purpose \\
 \hline
 \verb+RUMP_COMPONENT_DEV+ & device components \\
 \hline
+\verb+RUMP_COMPONENT_DEV_AFTERMAINBUS+ & device components run which after
+	the device tree root (\textit{mainbus}) has attached \\
+\hline
 \verb+RUMP_COMPONENT_KERN_VFS+ & base initialization which is done
 	after the VFS faction has attached, e.g. base components which
 	do VFS operations \\
 \hline
+\verb+RUMP_COMPONENT_SYSCALL+ & establish \textit{non-modular} syscalls
+	which are available in the factions present \\
+\hline
+\verb+RUMP_COMPONENT_POSTINIT+ & misc. components that attach right before
+	\verb+rump_init()+ returns \\
+\hline
 \end{tabular}
-\caption[Rump component classes]{
-\textbf{Rump component classes}.
+\caption[Component classes]{
+\textbf{Component classes}.
 The \texttt{RUMP\_COMPONENT} facility allows to specify component
 initialization at rump kernel bootstrap time.  Due to interdependencies
 between subsystems, the component type specifies the order in which
 components are initialized.  The order of component initialization is from top
-to bottom.
+to bottom.  The initializers designated \texttt{DEV}, \texttt{NET}
+and \texttt{VFS} are run only if the respective faction is present.
 }
 \label{tab:compinit}
 \end{table}
 
-\begin{figure}
+An example of a component file is presented in
+Figure~\ref{fig:component.c}.  The two routines specified in the
+component file will be automatically executed at the appropriate
+times during rump kernel bootstrap so as to ensure that any
+dependent components have been initialized before.  The full source
+code for the file can be found from the source tree path
+\verb+sys/rump/net/lib/libnetinet/netinet_component.c+.  The
+userspace rc~script \texttt{etc/rc/network} provides the equivalent
+functionality in a regular monolithic NetBSD setup.
+
+\begin{figure}[]
 {\tt \scriptsize  
 \begin{verbatim}
 RUMP_COMPONENT(RUMP_COMPONENT_NET)
@@ -2772,9 +2585,9 @@ RUMP_COMPONENT(RUMP_COMPONENT_NET_IFCFG)
         soclose(so);
 }
 \end{verbatim}}
-\caption[Example: selected contents of \texttt{component.c} for \textit{netinet}]{
-\textbf{Example: selected contents of \texttt{component.c} for
-\textit{netinet}.} The inet domain is attached in one constructor.
+\caption[Example: selected contents of \texttt{netinet\_component.c}]{
+\textbf{Example: selected contents of \texttt{netinet\_component.c}.}
+The inet domain is attached in one constructor.
 The presence of the domain is required for configuring an inet address
 for \texttt{lo0}.  The interface itself is provided and created by the
 \textit{net} component (not shown).
@@ -2782,44 +2595,59 @@ for \texttt{lo0}.  The interface itself is provided and created by the
 \label{fig:component.c}
 \end{figure}
 
-An example of a component file is presented in
-Figure~\ref{fig:component.c}.  The two routines specified in the
-component file will be automatically executed at the appropriate
-times during rump kernel bootstrap so as to ensure that any
-dependent components have been initialized before.  The full source
-code for the file can be found from the source tree path
-\texttt{sys/rump/net/lib/libnetinet/component.c}.  The
-userspace rc~script \texttt{etc/rc/network} provides the equivalent
-functionality in a regular monolithic NetBSD setup.
-
 
 \subsection{I/O Backends}
 \label{sect:iobackend}
 
 I/O backends allow a rump kernel to access I/O resources on the host
-and beyond.  The vast majority of access is done via the rumpuser
-hypercall interface first by opening a host device and then performing
-I/O via read/write.  In this section we will discuss the implementation
-possibilities and choices for the backends for networking and 
-file systems (block devices).
+and beyond.  Access to I/O devices always stems from hypercalls,
+and like we learned in Section~\ref{sect:hypercall}, hypercalls for
+accessing I/O devices are specific to the bus or device.  For
+example, accessing a PCI NIC is completely different from accessing
+\texttt{/dev/tap}.
+
+In this section we will discuss the implementation possibilities and
+choices for the I/O backends for networking and file systems (block
+devices) in userspace.  Other related sections are the ones which
+discuss USB via \textit{ugen} (Section~\ref{sect:usb}) and PCI on the
+Rumprun unikernel (Section~\ref{sect:pci}).  There is also support
+for accessing PCI devices from userspace available at
+\url{http://repo.rumpkernel.org/pci-userspace}, but we do not discuss
+that implementation in this book.
+
 
 \subsubsection{Networking}
 \label{sect:networking}
 
 The canonical way an operating system accesses the network is via an
-interface driver which communicates with a network interface device.
-The interface driver is at bottom of the network stack and is invoked
-when all layers of network processing in the OS have been performed.
-The interface itself has the capability for sending raw networking
-packets which are handed to it by the OS.  Sending and receiving raw
-network data is regarded as a privileged operation and is not allowed
-for all users.  Rather, unprivileged programs only have the capability
+interface driver.
+The driver is at bottom of the network stack and
+has the capability for sending and receiving raw networking
+packets.  On most general purpose OSs, sending and receiving raw
+network data is regarded as a privileged operation.
+Rather, unprivileged programs have only the capability
 to send and receive data via the sockets interfaces instead of deciding
 the full contents of a networking packet.
 
+\begin{figure}[t]
+\includegraphics[width=\linewidth]{imgs/ifcomp}
+\caption[Networking options for rump kernels]{
+\textbf{Networking options for rump kernels.}
+The \textit{virtif}
+facility provides a full networking stack by interfacing with, for example, the host's
+\textit{tap} driver (depicted).  The \textit{shmem} facility uses interprocess
+shared memory to provide an Ethernet-like bus to communicate between
+multiple rump kernels on a single host without requiring elevated
+privileges on the host.
+The \textit{sockin} facility provides unprivileged network access for
+all in-kernel socket users via the host's sockets.
+}
+\label{fig:netcomp}
+\end{figure}
+
 We have three distinct cases we wish to support in rump kernels.
-We list them below and then proceed to discuss their implementations in
-more detail.  Figure~\ref{fig:netcomp} contains an illustration.
+The cases are illustrated in Figure~\ref{fig:netcomp} and discussed
+next.
 
 \begin{enumerate}
 \item   \textbf{full network stack with raw access to the host's
@@ -2833,7 +2661,7 @@ more detail.  Figure~\ref{fig:netcomp} contains an illustration.
 	network}.  In this use case we are interested in being able
 	to send raw networking packets between rump kernels, but
 	are not interested in being able to access the network on
-	the host.  Automated testing is the main use case for this
+	the host.  Automated kernel driver testing in userspace is the main use case for this
 	type of setup.  We can fully use all of the networking
 	stack layers, with the exception of the physical device
 	driver, on a fully unprivileged account without any prior
@@ -2843,7 +2671,11 @@ more detail.  Figure~\ref{fig:netcomp} contains an illustration.
 	receiving data}.  In this case we are interested in the
 	ability to send and receive data via the host's network,
 	but do not care about the IP address associated with our
-	rump kernel.  An example use case is the NFS client driver:
+	rump kernel.  Though sending data via the host's network
+	stack requires that the host has a properly configured
+	network stack, we argue that this assumption is commonly true.
+
+	An example use case is the NFS client driver:
 	we wish to isolate and virtualize the handling of the NFS
 	protocol (\ie the file system portion).  However, we still
 	need to transmit the data to the server.  Using a full
@@ -2858,27 +2690,11 @@ more detail.  Figure~\ref{fig:netcomp} contains an illustration.
 	of the same service.
 \end{enumerate}
 
-\begin{figure}[t]
-\includegraphics[width=\linewidth]{ifcomp}
-\caption[Networking options for rump kernels]{
-\textbf{Networking options for rump kernels.}
-The \textit{virtif}
-facility provides a full networking stack by interfacing with the host's
-\textit{tap} driver.  The \textit{shmem} facility uses interprocess
-shared memory to provide an Ethernet-like bus to communicate between
-multiple rump kernels on a single host without requiring elevated
-privileges on the host.
-The \textit{sockin} facility provides unprivileged network access for
-all in-kernel socket users via the host's sockets.
-}
-\label{fig:netcomp}
-\end{figure}
-
 \subsubsection*{Raw network access}
 
-The canonical way to access an Ethernet network from a virtualized
+The commonly available way for accessing an Ethernet network from a virtualized
 TCP/IP stack running in userspace is to use the \textit{tap} driver
-with the {/dev/tap} device node.  The tap driver presents a file type
+with the \texttt{/dev/tap} device node.  The tap driver presents a file type
 interface to packet networking, and raw Ethernet frames can be
 received and sent from an open device node using the \texttt{read()} and
 \texttt{write()} calls.  If the tap interface on the host is bridged with
@@ -2913,14 +2729,21 @@ we implemented uses hypercalls to open the tap device on the
 host and to transmit packets via it.  The source code for the driver is
 located in \verb+sys/rump/net/lib/libvirtif+.
 
+Notably, while the tap method is near-ubiquitous and virtualizes
+the underlying network device for multiple consumers, it is not
+a high-performance option.  At \url{http://repo.rumpkernel.org/}
+we host high-performance network driver implementations for DPDK and
+netmap~\cite{rizzo:netmap} backends.  While we will not discuss those
+implementations in this book, we want to note that the rump kernel side
+of the driver is shared between the one use for tap (\ie \textit{virt}).
+The difference comes from alternative hypercall implementations.
+
+
 \subsubsection*{Full network stack without host network access}
 
 Essentially, we need an unprivileged Ethernet-like bus.  All interfaces
 which are attached to the same bus will be able to talk to each other
-directly, while other nodes may be reached via routers.  Accessing the
-host's network is possible if one rump kernel in the network uses the
-virt driver and routes traffic between the rump-only network and the
-real network.
+directly, while nodes with interfaces on other buses may be reached via routers.
 
 One option for implementing packet distribution is to use a
 userland daemon which listens on a local domain socket~\cite{dike:uml}.
@@ -2932,8 +2755,8 @@ in conflict with the goals of rump kernels, and that is why we chose
 another implementation strategy.
 
 We use shared memory provided by a memory mapped file as the network bus.
-The filename acts as the bus handle --- all network interfaces configured
-to be on the same bus use the same filename.  The \textit{shmif} driver
+The filename is the bus handle --- all network interfaces
+on the same bus use the same filename.  The \textit{shmif} driver
 (\manpageref{shmif.4}{shmif.4}) in the rump kernel accesses the bus.
 Each driver instance accesses one bus, so it is possible to connect a
 rump kernel to multiple different busses by configuring multiple drivers.
@@ -2948,16 +2771,17 @@ header contains pointers to the first and last packet and a generation
 number, along with bus locking information.  The bus lock is a
 spinlock based on cross-process shared memory.  A downside to this
 approach is that if a rump kernel crashes while holding the bus
-lock, the whole bus will halt.  However, we have never encountered this
-situation, so we do not consider it a serious flaw.
+lock, the whole bus will halt.  Since the main purpose of \textit{shmif}
+is testing, we do not consider the bus halting a serious flaw.
 
-Sending a packet requires locking the bus and copying the contents
-of the packet to the buffer.  Receiving packets is based on the
-ability of the \textit{kqueue}
-interface to be able to deliver notifications to processes when a
-file changes.  The interface driver gets a kqueue notification, it locks
-the bus and analyzes the bus header.  If there are new packets for the
-interface on question, the driver passes them up to the IP layer.
+Sending a packet requires locking the bus and copying the contents of
+the packet to the buffer. Receiving requires knowing when to check for
+new packets.  It is the job of a hypercall to monitor the bus and wake
+up the receive side when the bus changes.  This monitoring is,
+for example, implemented by using the \textit{kqueue} facility on BSD
+and \textit{inotify} on Linux.  The receive side of the driver
+locks the bus and analyzes the bus header.  If there are new packets
+for the interface on question, the driver passes them up to the IP layer.
 
 An additional benefit of using a file is that there is always one
 ringbuffer's worth of traffic available in a postmortem situation.
@@ -2967,7 +2791,7 @@ convert a busfile into the \textit{pcap} format which the
 \texttt{tcpdump} tool understands.  This conversion allows running
 a post-mortem tcpdump on a rump kernel's network packet trace.
 
-\subsubsection*{Unprivileged use of host's network}
+\subsubsection*{Unprivileged use of the host's network in userspace}
 
 Some POSIX-hosted virtualization solutions such as QEMU and UML provide
 unprivileged zero-configuration network access via a facility called
@@ -2984,7 +2808,8 @@ cause network traffic to be sent, and therefore Slirp is unaware of it.
 
 Since the host side relies only on the socket API, there is no need
 to perform network setup on the host.  Furthermore, elevated
-privileges are not required for the use of TCP and UDP.  On the
+privileges are not required for the use of TCP and UDP (except for
+opening ports <1024).  On the
 other hand, ICMP is not available since using it requires access
 to raw sockets on the host.  Also, any IP address configured on
 the guest will be purely fictional, since socket traffic sent from
@@ -3000,34 +2825,7 @@ data to IP datagrams, Slirp converts it back into data and socket
 family system call parameters, and the host's TCP/IP stack converts
 input from Slirp again to IP datagrams.
 
-Our implementation is different from the above.  Instead of doing
-transport and network layer processing in the rump kernel, we observe
-that regardless of what the guest does, processing will be done by the
-host.  At best, we would need to undo what the guest did so that we
-can feed the payload data to the host's sockets interface.  Instead of
-using the TCP/IP protocol suite in the rump kernel, we redefine the
-inet domain, and attach our implementation at the \textit{protocol
-switch} layer~\cite{stevens:tcpip2}.  We call this new implementation
-\textit{sockin} to reflect it being \textbf{sock}et \textbf{in}et.
-The attachment to the kernel is illustrated in
-Figure~\ref{fig:sockin}.  Attaching at the domain level means
-communication from the kernel's socket layer is done with
-\textit{usrreq}'s, which in turn map to the host socket API in a very
-straightforward manner.  For example, for \verb+PRU_ATTACH+ we call
-\texttt{socket()}, for \verb+PRU_BIND+ we call \texttt{bind()}, for
-\verb+PRU_CONNECT+ we call \texttt{connect()}, and so forth.  The
-whole implementation is 500 lines of code (including whitespace and
-comments), making it 1/20th of the size of Slirp.
-
-Since sockin attaches as the Internet domain, it is mutually exclusive
-with the regular TCP/IP protocol suite.  Furthermore, since the
-interface layer is excluded, the sockin approach is not suitable for
-scenarios which require full TCP/IP processing within the virtual
-kernel, \eg debugging the TCP/IP stack.  In such cases one of the
-other two networking models should be used.  This choice may
-be made individually for each rump kernel instance.
-
-\begin{figure}
+\begin{figure}[]
 {\tt \scriptsize
 \begin{verbatim}
 DOMAIN_DEFINE(sockindomain);
@@ -3079,6 +2877,33 @@ inet sockets.
 \label{fig:sockin}
 \end{figure}
 
+Our implementation is different from the one described above.  Instead of doing
+transport and network layer processing in the rump kernel, we observe
+that regardless of what the guest does, processing will be done by the
+host.  At best, we would need to undo what the guest did so that we
+can feed the payload data to the host's sockets interface.  Instead of
+using the TCP/IP protocol suite in the rump kernel, we redefine the
+inet domain, and attach our implementation at the \textit{protocol
+switch} layer~\cite{stevens:tcpip2}.  We call this new implementation
+\textit{sockin} to reflect it being \textbf{sock}et \textbf{in}et.
+The attachment to the kernel is illustrated in
+Figure~\ref{fig:sockin}.  Attaching at the domain level means
+communication from the kernel's socket layer is done with
+\textit{usrreq}'s, which in turn map to the host socket API in a very
+straightforward manner.  For example, for \verb+PRU_ATTACH+ we call
+\texttt{socket()}, for \verb+PRU_BIND+ we call \texttt{bind()}, for
+\verb+PRU_CONNECT+ we call \texttt{connect()}, and so forth.  The
+whole implementation is 500 lines of code (including whitespace and
+comments), making it 1/20th of the size of Slirp.
+
+Since sockin attaches as the Internet domain, it is mutually exclusive
+with the regular TCP/IP protocol suite.  Furthermore, since the
+interface layer is excluded, the sockin approach is not suitable for
+scenarios which require full TCP/IP processing within the virtual
+kernel, \eg debugging the TCP/IP stack.  In such cases one of the
+other two networking models should be used.  This choice may
+be made individually for each rump kernel instance.
+
 \subsubsection{Disk Driver}
 \label{chap:diskdriver}
 
@@ -3087,22 +2912,22 @@ instrumental to the operation of disk-based file systems.  The main
 interface is simple: a request instructs the driver to read or
 write a given number of sectors at a given offset.  The disk driver
 queues the request and returns.  The request is handled in an order
-according to a set policy, \eg the disk head elevator.  The request
-must be handled in a timely manner, since during the period that
-the disk driver is handling the request the object the data belongs
-to (\eg vm page) is held locked.  Once the request is complete,
-the driver signals the kernel that the request has been completed.
-In case the caller waits for the request to complete, the request
-is said to be synchronous, otherwise asynchronous.
+according to a set policy, \eg the disk head elevator.  Once the request
+is complete, the driver signals the kernel that the request has been
+completed.  In case the caller waits for the request to complete, the
+request is said to be synchronous, otherwise asynchronous.
 
 There are two ways to provide a disk backend: buffered and unbuffered.
-A buffered backend stores writes to a buffer and flushes them to the
-backing storage later.  An unbuffered backend will write to storage
-immediately.  Examples of these backend types are a regular file and a
-character special device, respectively.
+A buffered backend stores writes to a buffer and flushes them to
+the backing storage later.  Notably, to maintain file system on-disk
+correctness, synchronous writes must still be flushed to storage immediately.
+An unbuffered backend will always write to storage immediately.  Examples of
+these backend types are a regular file and a character special device,
+respectively.
 
 There are three approaches to implementing the block driver
-using standard userspace interfaces.
+hypercalls using standard userspace interfaces.
+
 \begin{itemize}
 \item   \textbf{Use \texttt{read()} and \texttt{write()}
 	in caller context}: this is the simplest method.  However,
@@ -3164,404 +2989,65 @@ using standard userspace interfaces.
 
 Of the above, we found that on buffered backends \verb+O_DIRECT+
 works best.  Ranged syncing and memory mapped I/O have roughly
-equal performance and full syncing performs poorly.  The disk driver
-question is revisited in Section~\ref{chap:fsperformance}, where
-we compare rump kernel file system performance against an in-kernel mount.
+equal performance and full syncing performs poorly.
 
 
-\subsection{Hardware Device Drivers: A Case of USB}
+\subsection{Hardware Devices: A Case of USB}
 \label{sect:usb}
 
-Hardware device drivers require access to their counterpart to
-function.  This counterpart can either be hardware itself or software
-which emulates the hardware.  Throughout this section our default
-assumption is that the virtualized driver is controlling real hardware.  Hardware
-access means that the hardware must be present on the system where
-the driver is run and that the driver has to have the appropriate
-privileges to access hardware.  Access is typically available only
-when the CPU is operating in privileged (kernel) mode.
+A general purpose OS kernel USB driver stack may choose to export USB
+device access to userspace via the USB generic driver, or \textit{ugen}.
+After ugen attaches to a USB bus node, it provides access to the
+attached hardware (\ie not the entire USB bus) from userspace via
+the \texttt{/dev/ugen<n>} device nodes and read/write/ioctl calls.
+Providing access via a device node
+means that any entity on the host with the appropriate privileges to
+access the device node may communicate with the hardware without having
+full access to the device registers.  A key point is that the USB protocol
+offered by ugen is essentially unchanged from the USB hardware protocol.
+This protocol compatibility allows preexisting kernel drivers to use
+ugen without protocol translation.
 
-The kernel USB driver stack exports USB device access to userspace
-via the USB generic driver, or \textit{ugen}.  After ugen attaches
-to a USB bus node, it provides access to the attached hardware (\ie
-not the entire USB bus) from userspace via the \texttt{/dev/ugen<n>}
-device nodes.  While hardware must still be present, providing
-access via a device node means that any entity on the host with
-the appropriate privileges to access the device node may communicate
-with the hardware.  A key point is that the USB protocol offered
-by ugen is essentially unchanged from the USB hardware protocol.
-This protocol compatibility allows preexisting kernel drivers to use ugen
-without protocol translation.
-
-Our main goal with USB support was to show it is possible to do
-kernel hardware device driver development in userspace.  The two
-subproblems we had to solve were being able to attach drivers to
-the ugen device nodes and to integrate with the device autoconfiguration
-subsystem~\cite{torek:config}.
-
-\subsubsection{Structure of USB}
-
-At the root of the USB bus topology is a \textit{USB host controller}.  It controls
-all traffic on the USB bus.  All device access on the bus is done
-through the host controller using an interface called USBDI, or
+At the root of the USB bus topology is a \textit{USB host controller}.
+It controls all traffic on the USB bus.  All device access on the bus
+is done through the host controller using an interface called USBDI, or
 USB Driver Interface.  The role of the host controller, along with ugen,
 is a detail which makes USB especially suitable for userspace drivers:
 we need to implement a host controller which maps USBDI to the ugen
 device node instead of having to care about all bus details.
 
 We implemented a host controller called \textit{ugenhc}.  When
-the kernel's device autoconfiguration subsystem calls the ugenhc
-driver to probe the device, the ugenhc driver tries to open
+the kernel's device autoconfiguration subsystem calls the \textit{ugenhc}
+driver to probe the device, the \textit{ugenhc} driver tries to open
 \texttt{/dev/ugen} on the host.  If the open is successful, the
 host kernel has attached a device to the respective ugen instance
-and ugenhc can return a successful match.  Next, the ugenhc
+and \textit{ugenhc} can return a successful match.  Next, the \textit{ugenhc}
 driver is attached in the rump kernel, along with a USB bus and a
 USB root hub.  The root hub driver explores the bus to see which
 devices are connected to it, causing the probes to be delivered
-first to ugenhc and through /dev/ugen to the host kernel and finally
-to the actual hardware.  Figure~\ref{fig:usbdmesg} contains a
-``dmesg'' of a server with four ugenhc devices configured and one
-USB mass media attached.
+first to \textit{ugenhc} and through \texttt{/dev/ugen} to the host
+kernel and finally to the actual hardware.  The device driver instance can
+be used from the rump kernel just like any other device driver, \eg
+USB network interfaces can be used by the networking stack to shuffle
+packets.
 
-\begin{figure}
-{\tt \scriptsize
-\begin{verbatim}
-golem> rump_server -lrumpvfs -lrumpdev -lrumpdev_disk -lrumpdev_usb \
-       -lrumpdev_ugenhc -lrumpdev_scsipi -lrumpdev_umass -v unix:///tmp/usbserv
-Copyright (c) 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005,
-    2006, 2007, 2008, 2009, 2010, 2011
-    The NetBSD Foundation, Inc.  All rights reserved.
-Copyright (c) 1982, 1986, 1989, 1991, 1993
-    The Regents of the University of California.  All rights reserved.
+\subsubsection{Conclusions of the USB Approach}
 
-NetBSD 5.99.48 (RUMP-ROAST) #0: Mon May  9 21:55:18 CEST 2011
-        pooka@pain-rustique.localhost:/usr/allsrc/cleansrc/sys/rump/librump/rumpkern
-total memory = unlimited (host limit)
-timecounter: Timecounters tick every 10.000 msec
-timecounter: Timecounter "rumpclk" frequency 100 Hz quality 0
-cpu0 at thinair0: rump virtual cpu
-cpu1 at thinair0: rump virtual cpu
-root file system type: rumpfs
-mainbus0 (root)
-ugenhc0 at mainbus0
-usb0 at ugenhc0: USB revision 2.0
-uhub0 at usb0: vendor 0x7275 product 0x6d70, class 9/0, rev 0.00/0.00, addr 1
-uhub0: 1 port with 1 removable, self powered
-ugenhc1 at mainbus0
-usb1 at ugenhc1: USB revision 2.0
-uhub1 at usb1: vendor 0x7275 product 0x6d70, class 9/0, rev 0.00/0.00, addr 1
-uhub1: 1 port with 1 removable, self powered
-ugenhc2 at mainbus0
-usb2 at ugenhc2: USB revision 2.0
-uhub2 at usb2: vendor 0x7275 product 0x6d70, class 9/0, rev 0.00/0.00, addr 1
-uhub2: 1 port with 1 removable, self powered
-ugenhc3 at mainbus0
-usb3 at ugenhc3: USB revision 2.0
-uhub3 at usb3: vendor 0x7275 product 0x6d70, class 9/0, rev 0.00/0.00, addr 1
-uhub3: 1 port with 1 removable, self powered
-Chicony Electronics Chicony Electronics, class 0/0, rev 2.00/1.00, addr 2, uhub0 port 1 not configured
-AuthenTec AuthenTec, class 255/255, rev 1.10/6.21, addr 2, uhub1 port 1 not configured
-umass0 at uhub2 port 1 configuration 1 interface 0
-umass0: Apple Computer product 0x1301, rev 2.00/1.00, addr 2
-umass0: using SCSI over Bulk-Only
-scsibus0 at umass0: 2 targets, 1 lun per target
-sd0 at scsibus0 target 0 lun 0: <Apple, iPod, 2.70> disk removable
-sd0: 968 MB, 30 cyl, 255 head, 63 sec, 2048 bytes/sect x 495616 sectors
-golem>
-\end{verbatim}
-}
-\caption[dmesg of USB pass-through rump kernel with mass media attached]{
-\textbf{dmesg of USB pass-through rump kernel with mass media attached.}
-The mass media is probed from the host's USB ports.
-}
-\label{fig:usbdmesg}
-\end{figure}
-
-\subsubsection{Defining Device Relations with Config}
-\label{sect:config}
-
-Device autoconfiguration~\cite{torek:config} is used to attach
-hardware device drivers in the NetBSD kernel.  A configuration file
-determines the relationship of device drivers in the system and
-the autoconfiguration subsystem attempts to attach drivers according
-to the configuration.  The configuration is expressed in a domain
-specific language (DSL).  The language is divided into two parts:
-a global set of descriptions for which drivers can attach to which
-busses, and a system-specific configuration of what hardware is
-expected to be present and how this particular configuration allows
-devices to attach.  For example, even though the USB bus allows a
-USB hub to be attached to another hub, the device configuration
-might allow a USB hub to be attached only to the host controller
-root hub and not other hubs.
-
-The kernel device configuration language and tools were originally
-designed for a monolithic build.  In a monolithic build one configuration
-is written for the entire system.  This configuration is translated
-into a set of C language constructs by a tool called \texttt{config},
-and the result is compiled into a kernel.  Compiling the device information
-statically into the kernel is not a suitable approach for kernel
-modules (which we discussed in Section~\ref{sect:extending}), since it is
-not possible to know at kernel compile time which modules may be loaded
-at runtime.
-
-Since the config tool lacked support for specifying the attachment
-relationships of individual drivers, kernel modules typically
-included hand-edited tables for the specifications.  Not only was
-creating them taxing work, but handcoding the relationships in C
-lacked the sanity checks performed by the config utility.  Furthermore,
-debugging any potential errors was very cumbersome.  While in the
-regular kernel most drivers could be compiled in at kernel build
-time, a rump kernel has no built-in drivers and therefore all
-drivers required the above style handcoding.
-
-To address the issue, we added two new keywords to the config DSL.
-We will first describe them and then proceed to present examples.
-
-\begin{itemize}
-\item   The \textbf{ioconf} keyword instructs config to generate
-	a runtime loadable device configuration description.  The
-	created tables are loaded by the driver init routine and
-	subsequently the autoconfiguration subsystem is invoked to
-	probe hardware.
-
-\item   The \textbf{pseudo-root} keyword specifies a local root
-	for the configuration file.  By default, config will refuse
-	a device configuration where a device attempts to attach
-	to an unknown parent.  The pseudo-root keyword can be used
-	to specify a parent which is assumed to be present.  If
-	the parent is not present at runtime, the driver will not
-	attach.  Without going into too much detail, pseudo-roots
-	are usually given in the most generic form possible, \eg
-	the audio driver attaches to an audiobus \textit{interface
-	attribute}.  This generic specification means that even though
-	not all drivers which can provide audio are known at compile
-	time, the audio driver will still attach as long as the parent
-	provides the correct interface attribute.
-\end{itemize}
-
-The example in Figure~\ref{fig:umassconf} specifies a USB mass
-media controller which may attach to a USB hub.  The hub may be
-the root hub provided by the ugenhc host controller.  The umass
-driver itself does not provide access to USB mass storage devices.
-This access is handled by disk driver and CD/DVD driver.  A configuration
-file specifying their attachments is presented in
-Figure~\ref{fig:scsipiconf}.  The pseudo-root specified in this
-configuration file also encompasses umass, since the umass bus
-provides both the SCSI and ATAPI interface attributes.
-
-It needs to be noted, though, that this example is not maximally
-modular: it includes configuration information both for SCSI and
-ATAPI disk and CD devices.  This lack of modularity is due to the umass driver using
-old-style compile-time definitions (cf. our discussion from
-Section~\ref{sect:partition}).  A configuration time macro signals
-the presence of SCSI or ATAPI to the drivers (\eg \texttt{NATAPIBUS})
-and if one fails to be present the resulting kernel fails to link.
-Therefore, we include both.  An improved and fully modular version
-of the driver would not have this compile-time limitation.
-
-\begin{figure}
-{\tt \scriptsize
-\begin{verbatim}
-#       $NetBSD: UMASS.ioconf,v 1.4 2010/08/23 20:49:53 pooka Exp $
-#
-
-ioconf umass
-
-include "conf/files"
-include "dev/usb/files.usb"
-
-pseudo-root uhub*
-
-# USB Mass Storage
-umass*  at uhub? port ? configuration ? interface ?
-\end{verbatim}}
-\caption[USB mass storage configuration]{
-\textbf{USB mass storage configuration.}
-A USB hub \textit{pseudo-root} is used to specify a node to which umass
-can attach.
-}
-\label{fig:umassconf}
-\end{figure}
-
-\begin{figure}
-{\tt \scriptsize
-\begin{verbatim}
-#       $NetBSD: SCSIPI.ioconf,v 1.1 2010/08/23 20:49:53 pooka Exp $
-#
-
-ioconf scsipi
-
-include "conf/files"
-include "dev/scsipi/files.scsipi"
-
-pseudo-root scsi*
-pseudo-root atapi*
-
-# SCSI support
-scsibus* at scsi?
-sd*     at scsibus? target ? lun ?
-cd*     at scsibus? target ? lun ? 
-
-# ATAPI support
-atapibus* at atapi?
-sd*     at atapibus? drive ? flags 0x0000 
-cd*     at atapibus? drive ? flags 0x0000
-\end{verbatim}}
-\caption[SCSI device configuration]{
-\textbf{SCSI device configuration.}
-This configuration supports both SCSI and APAPI disks and optical
-media drives.
-}
-\label{fig:scsipiconf}
-\end{figure}
-
-\subsubsection{DMA and USB}
-
-Direct memory access (DMA) allows devices to be programmed to access
-memory directly without involving the CPU.  Being able to freely
-program the DMA controller to read or write any physical memory
-address from an application is a security and stability issue.
-Allowing any unprivileged process to perform DMA on any memory
-address cannot be allowed in a secure and safe environment.  Limiting
-the capability can be accomplished with a hardware IOMMU unit, but
-at least currently they are not available on all standard computer
-systems.
-
-Due to USBDI, USB drivers do not perform DMA operations.  Instead, all DMA
-operations are done by the host controller on behalf of the devices.
-We only need to be able to handle DMA requests in the host controller.
-Since the ugenhc host controller passes requests to the host kernel's
-ugen driver, there is no need to support DMA in a rump kernel
-for the purpose of running unmodified USB drivers.
-
-Drivers will still allocate DMA-safe memory to pass to the host
-controller so that the host controller can perform the DMA operations.
-We must be able to correctly emulate the allocation of this
-memory.  In NetBSD, all modern device drivers use the machine
-independent \textit{bus~dma}~\cite{thorpe:busdma} framework for
-DMA memory.  bus~dma specifies a set of interfaces and
-structures which different architectures and busses must implement
-for machine independent drivers to be able to use DMA memory.
-We implement the bus~dma interface in
-\texttt{sys/rump/librump/rumpdev/rumpdma.c}.
-
-\subsubsection{USB Hubs}
-
-\begin{figure}[t]
-\includegraphics[width=0.6\linewidth]{usbhub.pdf}
-\caption[Attaching USB Hubs]{
-\textbf{Attaching USB Hubs.}
-In case a USB hub is attached by the host kernel as \textit{ugen} instead of
-as a hub, devices tree behind the hub will not be visible.
-}
-\label{fig:uhub}
-\end{figure}
-
-\begin{figure}
-\begin{flushleft}
-host probe:
-{\tt \scriptsize
-\begin{verbatim}
-ugen2 at uhub1 port 1
-ugen2: OnSpec Generic USB Hub
-\end{verbatim}}
-
-rump kernel probe:
-{\tt \scriptsize
-\begin{verbatim}
-ugenhc2 at mainbus0
-usb2 at ugenhc2: USB revision 2.0
-uhub2 at usb2
-uhub2: 1 port with 1 removable
-uhub3 at uhub2 port 1: OnSpec Inc.
-uhub3: 2 ports with 0 removable
-uhub4 at uhub3 port 1: OnSpec Inc.
-uhub5 at uhub3 port 2: OnSpec Inc.
-\end{verbatim}}
-\end{flushleft}
-\caption[USB device probe \textit{without} host HUBs]{
-\textbf{USB device probe \textit{without} host HUBs.}
-}
-\label{fig:uhub_nouber}
-\end{figure}
-
-A ugen can
-access only the specific USB device it is attached to; this prevents
-for example security issues by limiting access to one device
-on the USB bus.  For USB functions, such as mass~memory or audio,
-there are no implications.
-However, USB hubs expose other
-USB devices (functions or other USB hubs) further down the bus.
-If a USB hub is attached as ugen, it is possible to detect that
-devices are attached to the hub, but it is not possible to access
-any devices after the USB hub, including ones directly attached to
-it -- all ugen access will be directed at the hub.  Figure~\ref{fig:uhub}
-illustrates the matter in terms of a device tree, while Figure~\ref{fig:uhub_nouber}
-and Figure~\ref{fig:uhub_uber} present the same situation in terms
-of kernel bootlogs.
-In practice dealing with hubs is not an issue: the host needs to
-prioritized HUBs over ugen.
-
-\begin{figure}
-\begin{flushleft}
-host probe:
-{\tt \scriptsize
-\begin{verbatim}
-uhub5 at uhub2 port 1: OnSpec Generic Hub
-uhub5: 2 ports with 0 removable
-ugen2 at uhub5 port 1
-ugen2: Alcor Micro FD7in1
-ugen3 at uhub5 port 2
-ugen3: CITIZEN X1DE-USB
-\end{verbatim}}
-
-rump kernel probe:
-{\tt \scriptsize
-\begin{verbatim}
-ugenhc2 at mainbus0
-usb2 at ugenhc2: USB revision 2.0
-uhub2 at usb2
-umass0 at uhub2
-umass0: Alcor Micro
-umass0: using SCSI over Bulk-Only
-scsibus0 at umass0
-sd0 at scsibus0
-sd0: 93696 KB, 91 cyl, 64 head, 32 sec, 512 bytes/sect x 187392 sectors
-sd1 at scsibus0
-sd1: drive offline
-ugenhc3 at mainbus0
-usb3 at ugenhc3: USB revision 2.0
-uhub3 at usb3
-umass1 at uhub3
-umass1: using UFI over CBI with CCI
-atapibus0 at umass1
-sd2 at atapibus0 drive 0
-sd2: 1440 KB, 80 cyl, 2 head, 18 sec, 512 bytes/sect x 2880 sectors
-\end{verbatim}}
-\end{flushleft}
-\caption[USB device probe \textit{with} host HUBs]{
-\textbf{USB device probe \textit{with} host HUBs.}
-The devices behind the hub are visible.
-}
-\label{fig:uhub_uber}
-\end{figure}
+The USB approach is not recommended for hooking device drivers to rump
+kernels.  To implement \textit{ugenhc}, support for the USB protocol
+stack must already exist on the host.  Even though USB is supported
+by many hosts, the current implementation of \textit{ugenhc} is still
+NetBSD-specific.  Furthermore, we found that though in theory access
+through \texttt{/dev/ugen} is safe, during development we were able to
+tickle the host's USB protocol stack in surprising ways causing host
+kernel panics.  Supposedly, this instability is caused by the compound
+effect of both the USB protocol stack implementation being huge, and
+accessing it via \texttt{/dev/ugen} not being the frequently exercised
+access path.
 
 
-\clearpage
 \subsection{Microkernel Servers: Case Study with File Servers}
 \label{sect:libp2k}
-
-\begin{figure}[t]
-\includegraphics[height=6cm]{puffsarch}
-\caption[File system server]{
-\textbf{File system server.}
-The request from the microkernel client is transported by the host kernel
-to the rump kernel running providing the kernel file system driver.
-Although only system calls are illustrated, page faults created by
-the client may be handled by the server as well.
-}
-\label{fig:fsserv}
-\end{figure}
 
 In this section we investigate using rump kernels as microkernel
 style servers for file systems.  Our key motivation is to
@@ -3581,6 +3067,18 @@ is presented in Figure~\ref{fig:fsserv}.  It is worth noting that
 a userlevel application is not the only possible
 consumer.  Any VFS user, such as an NFS server running in the host kernel,
 is a valid consumer in this model.
+
+\begin{figure}[t]
+\includegraphics[height=6cm]{imgs/puffsarch}
+\caption[File system server]{
+\textbf{File system server.}
+The request from the microkernel client is transported by the host kernel
+to the rump kernel running providing the kernel file system driver.
+Although only system calls are illustrated, page faults created by
+the client may be handled by the server as well.
+}
+\label{fig:fsserv}
+\end{figure}
 
 
 \subsubsection{Mount Utilities and File Servers}
@@ -3723,8 +3221,8 @@ the opaque \verb+kauth_cred_t+ type used in the kernel.  This conversion
 is done by the p2k library's \verb+cred_create()+ routine, which
 in turn uses \verb+rump_pub_cred_create()+.
 
-The \verb+RUMP_VOP_LOCK()+ and \verb+RUMP_VOP_UNLOCK()+ macros in
-p2k to deal with NetBSD kernel virtual file system locking protocol.
+The \verb+RUMP_VOP_LOCK()+ and \verb+RUMP_VOP_UNLOCK()+ macros
+deal with NetBSD kernel VFS locking protocol.
 They take a lock on the vnode and unlock it,
 respectively.  From one perspective, locking at this level is
 irrelevant, since puffs in the host kernel takes care of locking.
@@ -3743,28 +3241,88 @@ cache in puffs a chance to flush all data.  It also allows the p2k
 library to call the rump kernel and ask it to unmount the file
 system and mark it clean.
 
+
+\subsubsection{Security Benefits}
+
+Drivers for disk-based file systems are written assuming that file
+system images contain trusted input.  With USB sticks and DVDs
+untrusted images are common.  Still, without thinking,
+users mount untrusted file systems using kernel drivers.  Arbitrary memory
+access is known to be possible using a suitable crafted file
+system image and fixing each file system driver to be bullet-proof is
+at best difficult~\cite{yang:exe}.
+
+When run in a rump kernel, a file system driver dealing with an untrusted
+image is isolated in its own domain.  This separation mitigates the
+possibility of a direct memory access attack on the kernel.
+
+\begin{figure}[t]
+{\tt \small
+\begin{verbatim}
+golem> mount -t msdos -o rump /dev/sd0e /mnt
+panic: buf mem pool index 23
+Abort (core dumped)
+golem>
+\end{verbatim}}
+\caption[Mounting a corrupt FAT FS with the kernel driver in a rump kernel]{
+\textbf{Mounting a corrupt FAT FS with the kernel driver in a rump kernel.}
+If the file system would have been mounted with the driver running in the
+host kernel, the entire host would have crashed.  With the driver running
+in userspace in a rump kernel, the mount failed and a core dump was created
+without otherwise affecting the host.
+}
+\label{fig:msdoscrash}
+\end{figure}
+
+To give an example of a useful scenario, a mailing list posting
+described a problem with mounting a FAT file system from a USB
+stick causing a kernel crash and complete system failure.  By using
+a rump kernel with microkernel clients, the problem is only an
+application core dump.  Figure~\ref{fig:msdoscrash} illustrates
+what happens when the file system is mounted with the driver running
+in a rump kernel.  Of course, the driver was fixed to deal graciously
+with this particular bug, but others remain.
+
+It needs to be stressed that mounting a file system as a server is
+feature wise no different than using a driver running in the host
+kernel.  The user and administrator experience remains the same,
+and so does the functionality.  Only the extra layer of security
+is added.  It is the author's opinion and recommendation that
+untrusted disk file systems should be never be mounted using a
+file system driver running in kernel space.
+
+A rump kernel has the same privileges as a process, so from the
+perspective of the host system its compromise is the same as the
+compromise of any other application.  In case rogue applications
+are a concern, on most operating systems access can be
+further limited by facilities such as jails~\cite{phk:jails} or
+sandboxing~\cite{ford:vx32}.  Networked file system clients (such
+as NFS and CIFS) may also benefit from the application of firewalls.
+
+
 \subsection{Remote Clients}
 \label{sect:sysproxyimpl}
 
 Remote clients are clients which are disjoint from the rump kernel.
-In a POSIX system, they are running in different
-processes, either on the same host or not.  The advantage of a
-remote client is that the relationship between the remote client
-and a rump kernel is much like that of a regular kernel and a
-process: the clients start up, run and exit independently.
-This independence makes it straightforward to adapt existing
-programs as rump kernel clients, and as we will see later in this section,
-allows existing binaries to use services from a rump kernel without
-recomplication.  For example, it is possible to configure an unmodified
-Firefox browser to use a TCP/IP stack provided by a rump kernel.
+For example, on POSIX hosts remote clients run in different processes
+than their respective rump kernels, either on the same host or not.
+The advantage of a remote client is that the relationship between
+the remote client and a rump kernel is much like that of a regular
+kernel and a process: the clients start up, run and exit independently.
+This independence makes it straightforward to adapt existing programs
+as rump kernel clients, and as we will see later in this section,
+allows existing POSIX binaries to use services from a rump kernel without
+recompilation.  For example, it is possible to hijack an unmodified
+Firefox browser to use a TCP/IP stack provided by a rump kernel.  Remote
+clients are also the basis for rumpctrl (Section~\ref{sect:rumpctrl}).
 
 \begin{figure}[t]
-\includegraphics[width=\linewidth]{sysproxy}
+\includegraphics[width=\linewidth]{imgs/sysproxy}
 \caption[Remote client architecture]{
 \textbf{Remote client architecture.}
 Remote clients communicate with the rump kernel through the
 \textit{rumpclient} library.  The client and rump kernel may or
-may not reside on the same host.
+may not reside on the same host or same type of host.
 }
 \label{fig:sysproxy}
 \end{figure}
@@ -3773,18 +3331,18 @@ The general architecture of remote rump clients is illustrated in
 Figure~\ref{fig:sysproxy}.  It is explained in detail in the
 following sections.
 
-Communication is done using host sockets.  Currently, two protocol
-families can be used for client-server communication: Unix domain
-sockets and TCP/IP.  The advantages of Unix domain sockets are that
-the available namespace is virtually unlimited and it is easy to
-bind a private server in a local directory without fear of a resource
-conflict.  Also, it is possible to use host credentials (via
-\texttt{chmod}) to control who has access to the server.  The TCP
-method does not have these advantages --- in the general case it
-is not possible to guarantee that a predefined port is not in use
---- but TCP does work over the Internet.  Generally speaking, Unix
-domain sockets should be used when the server and client reside on
-the same host.
+Communication can be done over virtually any type of bus.  The requirements for the
+bus are merely to be able to read and write datagrams.  By default, we
+provide the implementation for two socket-based protocol families: Unix
+domain sockets and TCP/IP.  The advantages of Unix domain sockets are that
+the available namespace is virtually unlimited and it is easy to bind a
+private server in a local directory without fear of a resource conflict.
+Also, it is possible to use host credentials (via \texttt{chmod}) to
+control who has access to the server.  The TCP method does not have these
+advantages --- in the general case it is not possible to guarantee that
+a predefined port is not in use --- but TCP does work over the Internet.
+Generally speaking, Unix domain sockets should be used when the server
+and client reside on the same host.
 
 \subsubsection{Client-Kernel Locators}
 
@@ -3793,7 +3351,7 @@ must know where the kernel is located.  In the traditional Unix
 model locating the kernel is simple, since there is one unambiguous kernel (``host
 kernel'') which is the same for every process.  However, remote
 clients can communicate with any rump kernel which may or may not
-reside on the same machine.
+reside on the same host.
 
 The client and rump kernel find each other by specifying a location
 using a URL.  For example, the URL \verb+tcp://1.2.3.4:4321/+
@@ -3802,21 +3360,23 @@ specifies a TCP connection on IP address 1.2.3.4 port 4321, while
 \textit{relative} to the current working directory.
 
 While service discovery models~\cite{czerwinski:sds} are possible,
-they are beyond the scope of this dissertation, and manual
+they are beyond our current scope, and manual
 configuration is currently required.  In most cases, such as for
 all the rump kernel using tests we have written, the URL can simply
 be hardcoded.
 
 \subsubsection{The Client}
+\label{sect:remoteclient}
 
 A remote client, unlike a local client, is not linked against the rump kernel.  Instead,
 it is linked against \textit{librumpclient}
 (\manpageref{rumpclient.3}{rumpclient.3}).  Linking can happen
-either when a program is compiled or when it is run.  The former
+either when a program is compiled or when it is run --- we mentioned this
+aspect of linking earlier in Section~\ref{sect:components}.  The former
 approach is usually used when writing programs with explicit rump
 kernel knowledge.  The latter approach uses the dynamic linker and
-can be used for programs which were written and compiled without knowledge of
-a rump kernel.
+can be used for pre-existing programs which were written and compiled
+without knowledge of a rump kernel.
 
 The rumpclient library provides support for connecting to a rump
 kernel and abstracts communication between the client and the
@@ -3834,21 +3394,22 @@ meaning it can be configured to automatically try to reconnect in
 case the connection with the server is severed.  Notably, as a reconnect
 may mean for instance that the kernel server crashed and was
 restarted, the applications using this facility need to be
-resilient against kernel state loss.  One good example is
-Firefox, which requires only a page reload in case a TCP/IP server
+resilient against kernel state loss.  One example is
+a web browser, which requires only a page reload in case a TCP/IP server
 was killed in the middle of loading a page.
 
 The server URL is read from the \verb+RUMP_SERVER+ environment
 variable.  The environment is used instead of a command line
 parameter so that applications which were not originally written
-to be rump clients can still be used as rump clients without code
+to be rump kernel clients can still be used as rump kernel clients without code
 changes.
 
 \subsubsection{The Server}
+\label{sect:rumpserver}
 
 A rump kernel can be configured as a server by calling the rump kernel
-interface \verb+rump_init_server(url)+ from the local client.  The
-argument the routine takes is a URL indicating an address the server will
+interface \verb+rump_init_server(const char *url)+ from the local client.  The
+argument is a URL indicating an address the server will
 be listening to.  The server will handle remote requests automatically
 in the background.  Initializing the serverside will not affect the local
 client's ability to communicate with the rump kernel.
@@ -3874,8 +3435,8 @@ $ rump_server -lrumpnet -lrumpnet_net -lrumpnet_netinet \
     -lrumpnet_virt unix:///tmp/tcpip
 \end{verbatim}}
 \end{flushleft}
-\caption[Example invocations lines of \texttt{rump\_server}]{
-\textbf{Example invocations lines of \texttt{rump\_server}.}
+\caption[Example invocations for \texttt{rump\_server}]{
+\textbf{Example invocations for \texttt{rump\_server}.}
 All invocations create rump kernels listening for clients at different
 addresses with different capabilities.
 }
@@ -3883,8 +3444,8 @@ addresses with different capabilities.
 \end{figure}
 
 The \verb+rump_server+ daemon (\manpageref{rumpserver.1}{rump\_server.1})
-is provided with NetBSD with the standard distribution for serving
-remote clients.  The factions and drivers supported by the server
+is a configurable userspace daemon for serving rump kernel
+remote clients.  The factions and drivers supported by the server instance
 are given as command line arguments and dynamically loaded by the
 server.  The variant \verb+rump_allserver+ includes all rump kernel
 components that were available at the time that the system was
@@ -3892,17 +3453,27 @@ built.  Figure~\ref{fig:rumpserver} illustrates server usage with
 examples.
 
 The data transport and protocol layer for remote clients is
-implemented entirely within the hypervisor.  Because host
-sockets were used already, those layers were convenient to implement there.
-This implementation locus means that the kernel side of the server and the hypercall
+implemented entirely within the hypervisor.  The original
+implementation~\footnote
+{
+	Actually, that was the second implementation, but it was the
+	first implementation which was not purely experimental.
+}
+utilized userspace host sockets, so the hypervisor
+seemed like a convenient place to implement support.  Later, that also
+turned out to be the only sensible place, as it avoids having to teach
+the rump kernel about the specifics of each bus.
+
+The implementation locus means that the kernel side of the server and the hypercall
 layer need to communicate with each other.  The interfaces used for
 communication are a straightforward extension of the
-communication protocol we will discuss in detail next
+protocol we will discuss in detail next
 (Section~\ref{sect:commproto}); we will not discuss the interfaces.
 The interfaces are defined in \texttt{sys/rump/include/rump/rumpuser.h}
-and are implemented in \verb+lib/librumpuser/rumpuser_sp.c+ for
-the hypervisor and \verb+sys/rump/librump/rumpkern/rump.c+ for the
-kernel.
+and are implemented for the POSIX hypervisor in \verb+lib/librumpuser/rumpuser_sp.c+.  The rump kernel side of the implementation is provided by
+the \verb+rumpkern_sysproxy+ component.  As a corollary of the implementation
+being a component, support is optional in any given rump kernel instance.
+
 
 \subsubsection{Communication Protocol}
 \label{sect:commproto}
@@ -3929,7 +3500,7 @@ kernel.
 	to service the system call.
 
 \item   The path of the file to be opened is required by the kernel.
-	By convention, only a pointer to the path string is passed
+	A pointer to the path string is passed
 	as part of the arguments.  The string is copied in from the
 	process address space only if it is required.  The \verb+copyinstr()+
 	routine is called to copy the pathname from the user process
@@ -3953,7 +3524,7 @@ types from the client to the kernel are presented and explained in
 Table~\ref{tab:remote_clireq} and the requests from the kernel to
 the client are presented and explained in Table~\ref{tab:remote_kernreq}.
 
-\begin{table}
+\begin{table}[]
 {\small
 \begin{tabular}{| p{2cm} | p{2.75cm} | p{2.75cm} | p{5.65cm} |}
 \hline
@@ -3984,7 +3555,7 @@ Establish a fork authentication cookie. \\
 \label{tab:remote_clireq}
 \end{table}
 
-\begin{table}
+\begin{table}[]
 {\small
 \begin{tabular}{| p{2cm} | p{2.75cm} | p{2.75cm} | p{5.6cm} |}
 \hline
@@ -4021,7 +3592,7 @@ raise &
 signal number &
 none (kernel does not expect a response) &
 Deliver a host signal to the client process.
-This request is used to implement the rump ``raise''
+This request is used to implement the rump kernel ``raise''
 signal model. \\
 \hline
 
@@ -4033,12 +3604,12 @@ signal model. \\
 \end{table}
 
 Now that we know the communication protocol, we will compare the
-operations executed in the regular case and in the rump remote
+operations executed in the regular case and in the rump kernel remote
 client case side-by-side.  The first part of the comparison
 is in Table~\ref{tab:syscall_comp_1} and the second part is
 in Table~\ref{tab:syscall_comp_2}.
 
-\begin{table}
+\begin{table}[]
 {\small
 \begin{tabular}{| p{7cm} | p{7cm} |}
 \hline
@@ -4063,7 +3634,7 @@ Host syscall & rump syscall \\
 &
 
 \begin{enumerate}[start=2]
-\item	librumpclient marshalls the arguments and sends a ``syscall'' request
+\item	librumpclient marshals the arguments and sends a ``syscall'' request
 	over the communication socket.  the calling thread is suspended
 	until the system call returns.
 \end{enumerate}
@@ -4105,7 +3676,7 @@ Host syscall & rump syscall \\
 \end{table}
 
 
-\begin{table}
+\begin{table}[]
 {\small
 \begin{tabular}{| p{7cm} | p{7cm} |}
 \hline
@@ -4149,7 +3720,8 @@ Host syscall & rump syscall \\
 \subsubsection{Of Processes and Inheritance}
 
 The process context for a remote client is controlled by the rump
-kernel server and the rump\_lwproc interfaces available
+kernel server.
+The rump\_lwproc interfaces available
 for local clients (\manpageref{rumplwproc.3}{rump\_lwproc.3}) cannot be used by
 remote clients.  Whenever a client connects to a rump kernel and
 performs a handshake, a new process context is created in the rump
@@ -4176,39 +3748,29 @@ not always optimal in all circumstances, and an alternative could be
 a system where cryptographic verification is used to
 determine the rump kernel credentials of a remote client.  Possible
 examples include Kerberos~\cite{kerberos} and TLS~\cite{tls} with
-clientside certificates.  Implementing any of these mechanisms was
-beyond the scope of our work.
+clientside certificates.  For the use cases so far, limiting access to
+the server URL has been sufficient.
 
-When a connection is severed, the rump kernel treats the process
-context as a killed process.  The rump kernel wakes up any and all
-threads associated with the connection currently blocking inside
-the rump kernel, waits for them to exit, and then proceeds to free
-all resources associated with the process.
+When a connection is severed, the meaning of which is bus-dependent, the
+rump kernel treats the process context as a killed process.  The rump
+kernel wakes up any and all threads associated with the connection
+currently blocking inside the rump kernel, waits for them to exit,
+and then proceeds to free all resources associated with the process.
 
 
-\subsubsection{System Call Hijacking}
+\subsubsection{Host System Call Hijacking}
+\label{sect:hijack}
 
 The only difference in calling convention between a rump client
 syscall function and the corresponding host syscall function in
-libc is the \verb+rump_sys+-prefix for a rump syscall.
-It is possible to select the entity the service is requested from
+libc is the \verb+rump_sys+-prefix for a rump kernel syscall.
+In other words, it is possible to select the entity the service is requested from
 by adding or removing a prefix from the system call name.
 The benefit of explicit source-level selection is that there is
 full control of which system call goes where.  The downside is that
 it requires source level control and compilation.  To
 use unmodified binaries, we must come up with a policy which
 determines which kernel handles each syscall.
-
-\begin{figure}[t]
-\includegraphics{hijack.pdf}
-\caption[System call hijacking]{
-\textbf{System call hijacking.}
-The \textit{rumphijack} library intercepts system calls and determines
-whether the syscall request should be sent to the rump kernel or the
-host kernel for processing.
-}
-\label{fig:hijack}
-\end{figure}
 
 A key point for us to observe is that in Unix a function call API in libc (\eg
 \verb+open(const char *path, int flags, mode_t mode)+) exists for
@@ -4230,6 +3792,17 @@ that select which kernel the call should go to.  While the level
 of granularity is not per-call like in the explicit source control
 method, using the classification technique we present below, this
 approach works in practice for all applications.
+
+\begin{figure}[t]
+\includegraphics{imgs/hijack}
+\caption[System call hijacking]{
+\textbf{System call hijacking.}
+The \textit{rumphijack} library intercepts system calls and determines
+whether the syscall request should be sent to the rump kernel or the
+host kernel for processing.
+}
+\label{fig:hijack}
+\end{figure}
 
 From the perspective of librumphijack, system calls can be divided
 into roughly the following categories.  These categories determine
@@ -4311,11 +3884,10 @@ is fully contained within the hijack and rumpclient libraries and
 it is not visible to applications using the libraries.
 
 Another issue we must address is protecting the file descriptors
-used by rumpclient.  Currently they include the communication socket
-file descriptor and the kqueue descriptor which rumpclient uses
-for I/O multiplexing.  Recall, the socket connection between the
+used internally by librumpclient.
+Recall, the connection between the
 remote client and the rump kernel associates the remote client with a rump kernel
-process context, and if the connection is lost all process state
+process context, and if the connection is lost all rump kernel process state
 such as file descriptors are lost with it.  In some scenarios
 applications want to close file descriptors en masse.
 One example of such a scenario is when an application prepares to
@@ -4479,7 +4051,7 @@ such lwps have returned from the rump kernel.
 \subsubsection{Performance}
 
 \begin{figure}[t]
-\includegraphics{remsys.pdf}
+\includegraphics{imgs/remsys}
 \caption[Local vs. Remote system call overhead]{
 \textbf{Local vs. Remote system call overhead.}
 The cost of remote system calls is dominated by the amount of
@@ -4527,7 +4099,7 @@ For several weeks the author did his day-to-day web browsing with
 Firefox acting as a remote client for a rump kernel TCP/IP stack.
 There was no human-perceivable difference between the performance
 of a rump networking stack and the host networking stack, either
-in bulk downloads of speeds up to 10Mbps, flash content or interactive
+in bulk downloads, flash content or interactive
 page loads.  The only human-perceivable difference was the ability
 to reboot the TCP/IP stack from under the browser without having
 to close the browser first.
@@ -4541,14 +4113,137 @@ are premature.  In the event of such use cases emerging, optimizations
 know from literature~\cite{bershad:lrpc, liedtke:improving} may be
 attempted.
 
+
+\subsection{Experiment: Bootstrap Time}
+
+Startup time is important when the rump kernel is frequently bootstrapped
+and ``thrown away''.  This transitory execution happens for example
+with utilities and in test runs.  It is also an enjoyment factor with
+interactive tasks, such as development work with a frequent iteration,
+as delays of over 100ms are perceivable to humans~\cite{miller:100ms}.
+
+The bootstrap times for various rump kernel faction configurations are
+presented in Figure~\ref{fig:soloboot}.  In general, it can be said
+that a rump kernel bootstraps itself in a matter of milliseconds, \ie
+a rump kernel outperforms a full operating system by a factor of 1000
+with this metric.  Furthermore, booting a rump kernel is faster than the time
+required for a hypervisor to launch a new instance.  We conclude that
+a rump kernel boots fast enough.
+
+\begin{figure}[t]
+\includegraphics{imgs/soloboot}
+\caption[Time required to bootstrap one rump kernel]{
+\textbf{Time required to bootstrap one rump kernel.}
+The time varies from configuration to configuration because of the
+the initialization code that must be run during bootstrap.
+}
+\label{fig:soloboot}
+\end{figure}
+
+\subsubsection*{Network clusters}
+\label{sect:netclust}
+
+Bootstrapping a single node was measured to be an operation measured
+in milliseconds.  High scalability and fast startup times make rump
+kernel a promising option for large-scale networking
+testing~\cite{hibler:emulab} by enabling physical hosts to have
+multiple independent networking stacks and routing tables.
+
+We measure the total time it takes to bootstrap such a cluster in
+userspace, and to configure and send
+an ICMP~ECHO packet through a networking cluster with up
+to 255 instances of a rump kernel.  The purpose of the ICMP~ECHO
+is to \textit{verify} that all nodes are functional.  The
+cluster is of linear topology, where node $n$ can talk to
+the neighboring $n-1$ and $n+1$.  This topology means that there are up to 254
+hops in the network, from node $1$ to $255$.
+
+We measured two different setups.  In the first one we used standard
+binaries provided by a NetBSD installation to start and configure
+the rump kernels acting as the nodes.  This remote client approach
+is most likely the one that will be used by most for casual testing,
+since it is simple and requires no coding or compiling.  We timed
+the script shown in Figure~\ref{fig:testping.sh}.  In the second
+setup we wrote a self-contained C program which bootstrapped a
+TCP/IP stack and configured its interfaces and routing tables.
+This local client approach is slightly more work to implement, but
+can be a valuable consideration if node startup and configuration is a bottleneck.
+Both approaches provide the same features during runtime.  The
+results are presented in Figure~\ref{fig:clusterstart}.
+
+\begin{figure}[]
+{\tt \scriptsize
+\begin{verbatim}
+#!/bin/sh
+
+RUMP_COMP='-lrumpnet -lrumpnet_net -lrumpnet_netinet -lrumpnet_shmif'
+[ $# -ne 1 ] && echo 'need count' && exit 1
+[ ! $1 -ge 3 -o ! $1 -le 255 ] && echo 'count between 3 and 255' && exit 1
+tot=$1
+
+startserver()
+{
+        net=${1}
+        export RUMP_SERVER=unix://rumpnet${net}
+        next=$((${net} + 1))
+        rump_server ${RUMP_COMP} ${RUMP_SERVER}
+
+        rump.ifconfig shmif0 create
+        rump.ifconfig shmif0 linkstr shm/shmif${net}
+        rump.ifconfig shmif0 inet 1.2.${net}.1 netmask 0xffffff00
+
+        if [ ${net} -ne ${tot} ]; then
+                rump.ifconfig shmif1 create
+                rump.ifconfig shmif1 linkstr shm/shmif${next}
+                rump.ifconfig shmif1 inet 1.2.${next}.2 netmask 0xffffff00
+        fi
+
+        [ ${net} -ne 1 ] && \
+            rump.route add -net 1.2.1.0 -netmask 0xffffff00 1.2.${net}.2
+        [ ${next} -ne ${tot} -a ${net} -ne ${tot} ] && \
+            rump.route add -net 1.2.${tot}.0 -netmask 0xffffff00 1.2.${next}.1
+}
+
+for x in `jot ${tot}`; do
+        startserver ${x}
+done
+
+env RUMP_SERVER=unix://rumpnet${tot} rump.ping -c 1 1.2.1.1
+\end{verbatim}}
+\caption[Script for starting, configuring and testing a network cluster]{
+\textbf{Script for starting, configuring and testing a network cluster.}
+This script can be used to test routing in up to the IP MAXTTL linearly
+chained TCP/IP stacks.
+}
+\label{fig:testping.sh}
+\end{figure}
+
+\begin{figure}[t]
+\includegraphics{imgs/clusterstart}
+\caption[Network cluster startup time]{
+\textbf{Network cluster startup time}.  The time is measured through
+starting the instances, configuring them, and up until the first
+packet sent from one end has made a full round-trip.}
+\label{fig:clusterstart}
+\end{figure}
+
+The standard component approach takes under 8s to start and configure a
+networking cluster of 255 nodes.  Although this approach is fast enough
+for most practical purposes, when testing clusters with 10-100x as many
+nodes, this startup time can already constitute a noticeable delay
+in case a full cluster is to be restarted.  Assuming linear scaling
+continues, \ie hardware limits such as available memory are not hit,
+the local client approach can bootstrap 10k nodes in 45 seconds, which
+is likely fast enough for all cluster reboot purposes.
+
 \subsection{Summary}
 
 We began this chapter by describing the cornerstone techniques for
 how to convert an existing monolithic kernel codebase into an
 anykernel.  To retain the existing properties of the monolithic
 kernel, we did not introduce any new technologies, and adjusted
-the codebase using the following techniques: code moving, function
-pointers and weak symbols.  These techniques were enough to convert
+the codebase using code moving and function
+pointers.  These techniques were enough to convert
 the NetBSD kernel into an anykernel with an independent base and
 orthogonal factions.
 

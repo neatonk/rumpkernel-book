@@ -1,26 +1,26 @@
-%	$Id: concept.tex,v 1.66 2012/11/15 02:32:02 pooka Exp $
-%
 
-\section{The Anykernel and Rump Kernels}
+\section{Concepts: Anykernel and Rump Kernels}
 \label{chap:concept}
 
-As a primer for the technical discussion in this document, we
-consider the elements that make up a modern Unix-style operating system
-kernel.  The following is not the only way to make a classification,
-but it is the most relevant one for our coming discussion.
+As a primer for the technical discussion in this book, we consider the
+elements that make up a modern Unix-style operating system.  Commonly,
+the operating system is cleft in twain with the \textit{kernel} providing
+basic support, and \textit{userspace} being where applications run.  Since
+this chapter is about the any\textit{kernel} and rump \textit{kernels},
+we limit the following discussion to the kernel.
 
 The \textit{CPU specific code} is on the bottom layer of the
-OS.  This code takes care of low level bootstrap and provides an
+operating system.  This code takes care of low level bootstrap and provides an
 abstract interface to the hardware.  In most, if not all, modern
 general purpose operating systems the CPU architecture is abstracted away
 from the bulk of the kernel and only the lowest layers have knowledge
 of it.  To put the previous statement into terms which are used in our
 later discussions, the interfaces provided by the CPU specific code are
-the hypercall interfaces that the OS runs on.  In the NetBSD
+the ``hypercall'' interfaces that the OS runs on.  In the NetBSD
 kernel these functions are usually prefixed with ``\texttt{cpu}''.
 
 The \textit{virtual memory subsystem} manages the virtual address space of
-the kernel and processes.  Virtual memory management includes defining what
+the kernel and application processes.  Virtual memory management includes defining what
 happens when a memory address is accessed.  Examples include
 normal read/write access to the memory, flagging a segmentation violation,
 or a file being read from the file system.
@@ -30,15 +30,16 @@ executable binaries use and knows how to create a new process when an
 executable is run.
 
 The \textit{scheduling code} includes a method and policy to define what
-code a CPU is executing.  The currently executing thread can be switched
-either when the scheduler decides it has run too long, or when the thread
-itself makes a system call which requires waiting for a condition to
-become true before execution can be resumed.  When a thread is switched,
-the scheduler calls the CPU specific code to save the machine context of
-the current thread and load the context of the new thread.  In NetBSD,
-both user processes and the kernel are preemptively scheduled, meaning
-the scheduler can decide to unschedule the currently executing thread
-and schedule a new one.
+code a CPU is executing.  Scheduling can be cooperative or preemptive.
+Cooperative scheduling means that the currently running thread decides when
+to yield --- sometimes this decision is implicit, \eg waiting
+for I/O to complete.  Preemptive scheduling means that also the scheduler
+can decide to unschedule the current thread and schedule a new one,
+typically because the current thread exceeded its allotted share of CPU
+time.  When a thread is switched, the scheduler calls the CPU specific
+code to save the machine context of the current thread and load the
+context of the new thread.  NetBSD uses preemptive scheduling both in
+userspace and in the kernel.
 
 \textit{Atomic operations} enable modifying memory atomically and
 avoid race conditions in for example a read-modify-write cycle.
@@ -67,141 +68,74 @@ there are more specific resources to manage.  Examples
 of more specific resources include vnodes~\cite{kleiman:vnodes} for file
 systems and mbufs~\cite{stevens:tcpip2} for the TCP/IP stack.
 
-\textit{Drivers} interact with external objects such as file
-system images, hardware, the network, etc.  After a fashion, it
-can be said they accomplish all the useful work an operating system
-does.  It needs to be remembered, though, that they operate
-by building on top of the entities mentioned earlier in this section.
-Drivers are what we are ultimately interested in utilizing, but to
-make them available we must deal with everything they depend on.
-Being able to reuse drivers means we have to provide semantically
-equivalent implementations of the support routines that the drivers use.
-The straightforward way is to run the entire kernel, but it not always
-the optimal approach, as we will demonstrate throughout this dissertation.
+\textit{Drivers} deal with translating various protocols such as file
+system images, hardware devices, network packets, etc.  Drivers are what
+we are ultimately interested in using in rump kernels, but to make them
+available we must deal with everything they depend on.
+We will touch this subject more in the next section.
 
-\subsection{An Ultralightweight Virtual Kernel for Drivers}
-\label{sect:conceptintro}
+\subsection{Driving Drivers}
 
-Virtualization of the entire operating system can done either by
-modifying the operating system kernel by means of paravirtualization
-(\eg User-Mode Linux~\cite{dike:uml} or Xen~\cite{barham:xen}) or by virtualizing at the
-hardware layer so than an unmodified operating system can be run
-(by using \eg QEMU~\cite{bellard:qemu}).  From the perspective of
-the host, virtualization provides both multiplicity and isolation
-of the monolithic kernel, and can be seen as a possible solution
-for our security and testing challenges from Section~\ref{sect:challenge}.
-Using a fully virtualized OS as an application library is less
-straightforward, but can be done by bootstrapping a guest instance
-of an operating system and communicating with the guest's kernel
-through an application running on the guest.  For example,
-libguestfs~\cite{libguestfs} uses this approach to access file
-system images safely.
+To run drivers without having to run the entire timesharing OS kernel, in essence we
+have to provide semantically equivalent implementations of the support
+routines that the drivers use.  The straightforward way indeed is to run
+the entire kernel, but it is not the optimal approach, as we argued in
+the introduction.  The key is to figure out what to reuse verbatim and
+what needs rethinking.
 
-Full OS virtualization is a heavyweight operation.  For
-instance, several seconds of bootstrap delay for a fully virtualized
-OS~\cite{jiang:soda} is too long if we wish to use virtualized
-kernel instances as application libraries --- humans perceive delays
-of over 100ms~\cite{miller:100ms}.  While it may be possible to
-amortize the bootstrap delay over several invocations, managing
-cached instances adds complexity to the applications, especially
-if multiple different users want to use ones for multiple different
-purposes.  Furthermore, a full OS consumes more machine resources,
-such as memory and storage and CPU, than is necessary for kernel
-driver virtualization.  The increased resource requirement is because
-a full OS provides the entire application environment, which from our
-perspective is overhead.
 
-Virtualization via containers~\cite{phk:jails} provides better
-performance than
-paravirtualization~\cite{soltesz:containers,wang:overhead}.
-However, containers do not address our motivating problems.
-With containers, the host kernel is directly used for the purposes
-of all guests.  In other words, kernel drivers are run in a single
-domain within the host.  There is no isolation between kernel
-drivers for different guests and a single error in one of them can
-bring all of the guests and the host down.  The lack of isolation is due
-to the use case that containers are targeted at: they provide a virtual
-application environment instead of a virtual kernel environment.
+\subsubsection{Relegation and Reuse}
 
-We wish to investigate a lightweight solution to maximize the
-performance and simplicity in our use cases.  In other words, we
-believe in an approach which requires only the essential
-functionality necessary for solving a
-problem~\cite{lampson:bestpaperever}.
+There are essentially two problems to solve.  One is coming up with an
+architecture which allows rump kernels to maximally integrate with the
+underlying platform.  The second one is figuring out how to satisfy
+the closure of the set of support routines used by desirable drivers.
+Those two problems are in fact related.  We will clarify in the following.
 
-\subsubsection{Partial Virtualization and Relegation}
-
-A key observation in our lightweight approach is that part of the
-supporting functionality required by drivers is readily provided
-by the system hosting our virtualized driver environment.  For
+The key to drivers being able to adapt to situations is to allow
+them to use the features of the underlying world directly.  For
 example, drivers need a memory address space to execute in; we use
-the one that the host provides instead of simulating a second one
-on top of it.  Likewise, we directly use the host's threading and
-scheduling facilities in our virtual kernel instead of having the
-host schedule a virtual kernel with its own layer of scheduling.
-Relegating support functionality to the host avoids adding a layer
-of indirection and overhead.  It is also the reason why we call
-our virtualized kernel instance a \textit{rump kernel}: it virtualizes
-only a part of the original.  In terms of taxonomy, we classify a
-rump kernel as partial paravirtualization.
+the underlying one instead of simulating a second one
+on top of it.  Likewise, we directly use the threading and
+scheduling facilities in our rump kernel instead of having the
+scheduling a virtual kernel with its own layer of scheduling.
+Relegating support functionality to the host avoids adding a layer of
+indirection and overhead.
+
+Rump kernels are never full kernels which can independently run directly on bare
+metal, and always need lower layer support from the host.  This layer
+can be a spartan, specially-constructed one consisting of some thousands
+of lines of code, or an extremely complex such as a current generation
+general purpose operating system.
 
 Drivers in a rump kernel remain unmodified over the original ones.
 A large part of the support routines remain unmodified as well.
-Only in places where support is relegated to the host, do we require
-specifically written glue code.  We use the term \textit{anykernel} to describe
- a kernel code base with the property of being able use unmodified
-drivers and the relevant support routines in rump kernels.  It should be
-noted that unlike for example the term \textit{microkernel}, the term
-\textit{anykernel} does not convey information about how the drivers
-are organized at runtime, but rather that it is possible to organize
-them in a number of ways.  We will examine the implementation details
-of an anykernel more closely in \chapref{implementation} where we
-turn a monolithic kernel into an anykernel.
+Only in places where support is relegated to the host do we require
+specifically written glue code.  As was indicated already in the introductory
+chapter, we use the term \textit{anykernel}
+to describe a kernel code base with the property of being able use
+unmodified drivers and the relevant support routines in rump kernels.
 
-While rump kernels (\ie guests) use features provided by the host, the
-difference to containers is that rump kernels themselves are not a part
-of the host.  Instead, the host provides the necessary facilities for
-starting multiple rump kernel instances.  These instances are not only
-isolated from each other, but also from the host.  In POSIX terms,
-this means that a rump kernel has the same access rights as any other
-process running with the same credentials.
+It should be noted that unlike for example the terms \textit{microkernel}
+or \textit{unikernel}, the term \textit{anykernel} does not convey
+information about how the drivers are organized at runtime, but rather
+that it is possible to organize them in a number of ways.
 
-An example of a practical benefit resulting from relegating relates
-to program execution.  When a fully virtualized operating system
-executes a program, it searches for the program from its file system
-namespace and runs it while the host remains oblivious to the fact
-that the guest ran a program.  In contrast, the rump kernel and its
-clients are run from the host's file system namespace by the host.
-Since process execution is handled by the host, there is no need to
-configure a root file system for a rump kernel, and rump kernels
-can be used as long as the necessary binaries are present on the
-host.  This also means that there is no extra maintenance burden resulting
-from keeping virtual machine images up-to-date.  As
-long the host is kept up-to-date, the binaries used with rump kernels
-will not be out of date and potentially contain dormant security
-vulnerabilities~\cite{garfinkel:harder}.
+We examine the implementation details of an anykernel more closely
+in \chapref{implementation} where we turn the NetBSD kernel into
+an anykernel.
 
-Another example of a practical benefit that a rump kernel provides
-is core dump size.  Since a rump kernel has a small memory
-footprint, the core dumps produced as the result of a \textit{kernel
-panic} are small.  Small core dumps significantly reduce disk use
-and restart time without having to disable core dumps completely and
-risk losing valuable debugging information.
-
-A negative implication of selective virtualization is that not all
-parts of the kernel can be tested and isolated using this scheme.
-However, since a vast majority of kernel bugs are in
-drivers~\cite{chou:oserr}, our focus is on improving the
-state-of-the-art for them.
 
 \subsubsection{Base, Orthogonal Factions, Drivers}
+\label{sect:conceptintro}
 
 A monolithic kernel, as the name implies, is one single entity.  The
 runtime footprint of a monolithic kernel contains support functionality
 for all subsystems, such as sockets for networking, vnodes for file
 systems and device autoconfiguration for drivers.  All of these
 facilities cost resources, especially memory, even if they are not
-used.
+used.  They may also impose dependencies on the underlying platform,
+\eg MMU for some aspects of virtual memory support.
 
 We have divided a rump kernel, and therefore the underlying NetBSD
 kernel codebase, into three layers which are illustrated in
@@ -218,7 +152,7 @@ not depend on any faction, as that would mean the inclusion of a
 faction in a rump kernel is mandatory instead of optional.
 
 \begin{figure}[t]
-\includegraphics[height=8cm]{complevel}
+\includegraphics[height=8cm]{imgs/complevel}
 \caption[Rump kernel hierarchy]{\textbf{Rump kernel hierarchy.}
 The desired drivers dictate the required components.  The factions
 are orthogonal and depend only on the rump kernel base.  The rump
@@ -266,32 +200,28 @@ chapter when we go over other concepts related to rump kernels.
 The faction divisions allow cutting down several hundred kilobytes
 of memory overhead and milliseconds in startup time per instance.
 While the saving per instance is not dramatic, the overall savings
-are sizeable in applications such as network testing~\cite{hibler:emulab}
-which require thousands of virtual instances.  For example, as we
-will later measure in \chapref{evaluation}, a virtual TCP/IP stack
-without file system support is 40\% smaller (400kB) than
-one which contains file system support.
+are sizeable in scenarios such as IoT, network testing~\cite{hibler:emulab},
+or cloud services, which demand thousands of instances.  For example, a
+rump kernel TCP/IP stack without file system support is 40\% smaller
+(400kB) than one which contains file system support.
 
 \subsubsection{Hosting}
 
-A rump kernel accesses host resources through the \textit{rumpuser} hypercall interface.
-The hypercall layer is currently implemented for POSIX hosts, but there
-is no reason why it could not be adapted to suit alternative hosting
-as well, such as microkernels.  We analyze the requirements for the
-hypercall interface in more detail in Section~\ref{sect:hypercall}.
-Whenever discussing hosting and the hypercall interface we attempt to
-keep the discussion generic and fall back to POSIX terminology only
-when necessary.
+To function properly, a rump kernel must access certain underlying resources
+such as memory and the scheduler.  These resources are accessed through
+the \textit{rumpuser} hypercall interface.  We will analyze and describe
+this interface in detail in Section~\ref{sect:hypercall}.  We call the
+underlying platform-specific software layer the \textit{host}; the hypercalls are
+implemented on top of the host.
 
-The host controls what resources the guest has access to.
-It is unnecessary to run rump kernels as root on POSIX systems ---
-security-conscious people will regard it as unwise as well unless there
-is a very good reason for it.  Accessing resources such as the host file
-system will be limited to whatever credentials the rump kernel runs with
-on the host.  Other resources such as memory consumption may be limited
-by the host as well.
+Notably, as we already hinted earlier, the platform
+requirements for a rump kernel are extremely minimal, and a rump kernel
+can run virtually everywhere.  For example, there is no need to run the
+rump kernel in privileged hardware mode.  Ultimately, the host has full
+control and fine-grained control of what a rump kernel has access to.
 
-\begin{figure}
+
+\begin{figure}[]
 {\tt \scriptsize
 \begin{verbatim}
 int
@@ -323,7 +253,7 @@ of a rump kernel.}
 \label{fig:bpfvfs}
 \end{figure}
 
-\begin{figure}
+\begin{figure}[]
 {\tt \scriptsize
 \begin{verbatim}
 int rumpns_bpfopen(dev_t, int, int, struct lwp *);
@@ -381,23 +311,20 @@ system call interfaces.}
 \subsection{Rump Kernel Clients}
 \label{sect:clitax}
 
-We define a rump kernel client to be an application that requests
+We define a rump kernel client to be an entity which requests
 services from a rump kernel.  Examples of rump kernel clients are
-an application that accesses the network through a TCP/IP stack
-provided by a rump kernel, or an application that reads files via
-a file system driver running in a rump kernel.  Likewise, a test
-program that is used to test kernel code by means of running it
+userspace applications which access the network through a TCP/IP stack
+provided by a rump kernel, userspace applications which read files via
+a file system driver provided by a rump kernel, or simply any application
+running on the Rumprun unikernel (Section~\ref{sect:rumprun}).  Likewise,
+a test program that is used to test kernel code by means of running it
 in a rump kernel is a rump kernel client.
 
 The relationship between a rump kernel and a rump kernel client is
 an almost direct analogy to an application process executing on an
 operating system and requesting services from the host kernel.
-The difference is that a rump kernel client must explicitly request
-all services from the rump kernel, while a process receives some
-services such as scheduling and memory protection implicitly from
-the host.
 
-As mentioned in \chapref{introduction} there are several possible relationship
+There are several possible relationship
 types the client and rump kernel can have.  Each of them have
 different implications on the client and kernel.  The possibilities
 are: \textit{local}, \textit{remote} and \textit{microkernel}.
@@ -405,6 +332,16 @@ The configurations are also depicted in Figure~\ref{fig:clidiag}.
 The implications of each are available in summarized form in
 Table~\ref{tab:clients}.  Next, we will discuss the configurations and
 explain the table.
+
+\begin{figure}[t]
+\includegraphics[width=\linewidth]{imgs/clientcomp}
+\caption[Client types illustrated]{\textbf{Client types illustrated.}
+For local clients the client and rump kernel reside in a single process,
+while remote and microkernel clients reside in separate processes and
+therefore do not have direct memory access into the rump kernel.
+}
+\label{fig:clidiag}
+\end{figure}
 
 \begin{table}[t]
 \begin{tabular}{| l | l | l | l | l |}
@@ -429,16 +366,6 @@ server with requests routed by the host kernel.
 \label{tab:clients}
 \end{table}
 
-\begin{figure}[t]
-\includegraphics[width=\linewidth]{clientcomp}
-\caption[Client types illustrated]{\textbf{Client types illustrated.}
-For local clients the client and rump kernel reside in a single process,
-while remote and microkernel clients reside in separate processes and
-therefore do not have direct memory access into the rump kernel.
-}
-\label{fig:clidiag}
-\end{figure}
-
 \begin{itemize}
 \item   \textbf{Local} clients exist in the same application process
 	as the rump kernel itself.  They have full access to the
@@ -446,11 +373,7 @@ therefore do not have direct memory access into the rump kernel.
 	calls directly into the rump kernel.  Typically requests
 	are done via established interfaces such as the rump kernel
 	syscall interface, but there is nothing preventing the client
-	from jumping to any routine inside the rump kernel.  The
-	VFS-bypassing example in Figure~\ref{fig:bpfdirect} is a
-	local client which manipulates the kernel directly, while
-	the local client in Figure~\ref{fig:bpfvfs} uses established
-	interfaces.
+	from jumping to any routine inside the rump kernel.
 
 	The benefits of local clients include speed and compactness.
 	Speed is due to a rump kernel request being essentially a
@@ -466,7 +389,7 @@ therefore do not have direct memory access into the rump kernel.
 	steps as multiple invocations of the tool, adaptation of the
 	configuration code may not always be simple.
 
-	On a POSIX system, local clients do not have meaningful semantics
+	Local clients do not have meaningful semantics
 	for a host \texttt{fork()} call.  This lack of semantics is
 	because the rump kernel state would be duplicated and could
 	result in for example two kernels accessing the same file system
@@ -477,7 +400,7 @@ therefore do not have direct memory access into the rump kernel.
 	a file system.
 
 \item	\textbf{Remote} clients use a rump kernel which resides
-	elsewhere, either on the local host or a remote one.  The request
+	elsewhere, either in a different address space on the local host or on a remote one.  The request
 	routing policy is up to the client.  The policy locus is an
 	implementation decision, not a design decision, and alternative
 	implementations can be considered~\cite{gardenghi:viewos} if
@@ -495,25 +418,33 @@ therefore do not have direct memory access into the rump kernel.
 	resources in turn means that real security models are possible,
 	and that different clients may have varying levels of privileges.
 
-	We have implemented support for remote clients which
-	communicate with the server using local domain sockets or TCP
-	sockets.  Using sockets is not the only option, and for example
-	the \texttt{ptrace()} facility can also be used to implement
-	remote clients~\cite{dike:uml,gardenghi:viewos}.
+	By default, we provide support for remote clients which
+	communicate with a rump kernel using host local domain sockets or TCP
+	sockets.  Using sockets is not the only option on
+	general purpose operating systems, and for example the
+	\texttt{ptrace()} facility can also be used to implement remote
+	clients~\cite{dike:uml,gardenghi:viewos}.  Also, we know that
+	the protocol can be implemented over various media in non-POSIX
+	environments, \eg over a hardware bus.
 
 	Remote clients are not as performant as local clients due to
 	IPC overhead.
 	However, since multiple remote clients can run against a
 	single rump kernel, they lead to more straightforward use
 	of existing code and even that of unmodified binaries.
+	Such binaries can be useful to configure and inspect a
+	rump kernel (\eg \texttt{ifconfig}).  We discuss these binaries
+	and their advantages further in Section~\ref{sect:sysproxyimpl}
+	and Section~\ref{sect:rumpctrl}.
 
 	Remote clients, unlike local clients, have meaningful semantics
 	for \texttt{fork()} since both the host kernel context and
 	rump kernel contexts can be correctly preserved: the host
 	\texttt{fork()} duplicates only the client and not the rump
-	kernel.
+	kernel.  Of course, this statement applies only to hosts
+	which support a \verb+fork()+ call.
 
-\item   \textbf{Microkernel} clients requests are routed by the host kernel to
+\item   \textbf{Microkernel} client requests are routed by the host kernel to
 	a separate server which handles the requests using a driver in a
 	rump kernel.  While microkernel clients can be seen to be remote
 	clients, the key difference to remote clients is that the request
@@ -540,6 +471,7 @@ This local client is responsible for forwarding incoming requests to
 the rump kernel, and sending the results back after the request has
 been processed.
 
+
 \subsection{Threads and Schedulers}
 \label{sect:procmodel}
 
@@ -550,7 +482,7 @@ Section~\ref{sect:lexample}.  This subject is revisited in
 Section~\ref{sect:rumpentry} where we discuss it from a more concrete
 perspective along with the implementation.
 
-As stated earlier, a rump kernel uses the host's process, thread and
+As stated earlier, a rump kernel uses the host's thread and
 scheduling facilities.  To understand why we still need to discuss
 this topic, let us first consider what a thread represents to an
 operating system.  First, a thread represents machine execution context,
@@ -566,7 +498,7 @@ to, and \eg therefore what credentials and file descriptors it has.
 The soft context is determined by the operating system.
 
 To further illustrate, we go over a simplified version of what happens
-in NetBSD when an application process creates a thread:
+on NetBSD when an application process creates a thread:
 
 \begin{enumerate}
 \item   The application calls \verb+pthread_create()+ and passes
@@ -604,8 +536,8 @@ descriptors accesses the relevant data structure by dereferencing
 	Furthermore, since file descriptors are a process concept
 	instead of a thread concept, it would be more logical to
 	access them via \texttt{curlwp->l\_proc->p\_fd}.
-	The pointer is cached directly in
-	the thread structure to avoid extra indirection.
+	This commonly referenced pointer is cached directly in
+	the thread structure as an optimization to avoid indirection.
 }.
 The soft context determines the value of \texttt{curlwp}.
 
@@ -657,8 +589,9 @@ There are alternative approaches to implicit threads.  It would
 be possible to require all local host threads to register with the rump
 kernel before making calls.  The registration would create essentially
 a bound thread.  There are two reasons why this approach was not chosen.
-First, it increases the inconvenience factor for casual users, as they
-now need a separate call per host thread.  Second, some mechanism
+First, it increases the inconvenience factor for casual users, \eg
+in kernel testing use cases, as
+now a separate call per host thread is needed.  Second, some mechanism
 like implicit threads must be implemented anyway: allocating a rump
 kernel thread context requires a rump kernel context for example to be
 able to allocate memory for the data structures.  Our implicit thread
@@ -673,10 +606,18 @@ amount which will never be reached (\eg 10,000) may avoid deadlock,
 but is wasteful.  Additionally, we assume all users aiming for high
 performance will use bound threads.
 
+Notably, in some rump kernel use cases where rump kernel and host threads
+are always 1:1-mapped, such as with the Rumprun unikernel, all threads
+are established as bound threads transparently to the applications.  However,
+the implicit thread mechanism is still used to bootstrap the contexts
+for those threads.
+
+
 \subsubsection{Kernel threads}
 
 Up until now, we have discussed the rump kernel context of threads which
-are created by the client, typically by calling \verb+pthread_create()+.
+are created by the client, \eg by calling \verb+pthread_create()+ on a
+POSIX host.
 In addition, \textit{kernel threads} exist.  The creation of a kernel
 thread is initiated by the kernel and the entry point lies within the
 kernel.  Therefore, a kernel thread always executes within the kernel
@@ -733,7 +674,7 @@ The one-to-one relationship between the guest CPU and the guest thread
 must exist because CPU-local algorithms rely on that invariant.  If we
 remove the restriction of each rump kernel CPU running at most one thread
 at a time, code written against CPU-local algorithms will cause data
-structure corruption and fail.  Therefore, it is necessary to uphold
+structure corruption.  Therefore, it is necessary to uphold
 the invariant that a CPU has at most one thread executing on it at a time.
 
 \begin{figure}[t]
@@ -819,7 +760,7 @@ scheduling in a rump kernel.
 \subsubsection{An Example}
 \label{sect:lexample}
 
-We present an example to clarify the content of this subsection.
+We present a clarifying example.
 Let us assume two host threads, A and B, which both act as local clients.
 The host schedules thread A first.  It makes a call into the rump kernel
 requesting a bound thread.  First, the soft context for an implicit thread
@@ -871,15 +812,14 @@ available for the rump kernel.
 \subsection{Virtual Memory}
 \label{sect:vmconcept}
 
-Virtual memory address space management in a rump kernel is relegated
-to the host because support in a rump kernel would
-not add value in terms of the intended use cases.  The only case
-where full virtual memory support would be helpful would be for
-testing the virtual memory subsystem.  Emulating page faults and
-memory protection in a usermode OS exhibits over tenfold performance
-penalty and can be significant in other, though not all,
-hypervisors~\cite{barham:xen}.  Therefore, supporting a corner use
-case was not seen worth the performance penalty in other use cases.
+Virtual memory address space management in a rump kernel (if any!) is relegated
+to the host, because requiring support in a rump kernel would impose
+restrictions on the platform and host.  For example, emulating page
+faults and memory protection in a usermode OS exhibits over tenfold
+performance penalty and can be significant in other, though not all,
+hypervisors~\cite{barham:xen}.  Virtual memory support
+was not seen worth the increased implementation complexity and
+potentially reduced performance.
 
 The implication of a rump kernel not implementing full memory
 protection is that it does not support accessing resources via page
@@ -889,7 +829,7 @@ not work for remote clients anyway, since the page faults need to be
 trapped on the client machine.
 
 \begin{figure}[t]
-\includegraphics[height=6cm]{puffsfault}
+\includegraphics[height=6cm]{imgs/puffsfault}
 \caption[Providing memory mapping support on top of a rump kernel]
 {\textbf{Providing memory mapping support on top of a rump kernel}.
 The file is mapped into the client's address space by the host kernel.
@@ -900,10 +840,10 @@ the host kernel's file system code to supply the desired data.}
 \end{figure}
 
 However, it is possible to provide memory
-mapping \textit{on top} of rump kernels.  In fact, when running
+mapping support \textit{on top} of rump kernels.  In fact, when running
 file systems as microkernel servers, the puffs~\cite{kantee:puffs}
 userspace file system framework and the host kernel provide memory
-mapping for the microkernel client.  The page fault is resolved
+mapping support for the microkernel client.  The page fault is resolved
 in the host kernel, and the I/O request for paging in the necessary data
 sent to the rump kernel.  After the rump kernel has satisfied the request
 and responded via puffs, the host kernel unblocks the process that caused
@@ -948,7 +888,7 @@ When a remote client connects to a rump kernel, it gets assigned a rump
 kernel process context with appropriate credentials.  After the handshake
 is complete, the remote client can issue service requests via the standard
 system call interface.  First, the client calls a local stub routine,
-which marshalls the request.  The stub then sends the request to the
+which marshals the request.  The stub then sends the request to the
 server and blocks the caller.  After the rump kernel server has processed
 the request and responded, the response is decoded and the client is
 unblocked.  When the connection between a rump kernel and a remote client
@@ -964,19 +904,18 @@ codebase such as Plan~9~\cite{pike:plan9}.
 
 \subsection{Summary}
 
-A rump kernel is a partial virtualization of an operating system kernel
-with the virtualization target being the drivers.  To be as lightweight
-as possible, a rump kernel relies on two features: relegating support
-functionality to the host where possible and an anykernel codebase
-where different units of the kernel (\eg networking and file systems)
-are disjoint enough to be usable in configurations where all parties
-are not present.
+Rump kernels provide lightweight driver stacks which can run on
+practically any platform.  To be as lightweight and portable as possible, rump
+kernels rely on two features: relegating support functionality to the
+host and an anykernel codebase where different units of
+the kernel (\eg networking and file systems) are disjoint enough to be
+usable in configurations where all parties are not present.
 
 Rump kernels support three types of clients: local, microkernel
 and remote.  Each client type has its unique properties and varies for
 example in access rights to a rump kernel, the mechanism for making
 requests, and performance characteristics.  Remote clients are able to
-access a rump kernel over the Internet.
+access a rump kernel over the Internet and other media.
 
 For drivers to function, a rump kernel must possess runtime context
 information.  This information consists of the process/thread

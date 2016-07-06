@@ -1428,19 +1428,6 @@ http://www.aalto.fi
     \cleardoublepage}
 }
 
-\newcommand\manpagetoc{%
-   {\setlength\parskip{0\p@ \@plus \p@}
-    \@starttoc{mof}%
-   }
-   \newpage
-}
-
-\newcommand\manpage[3]{
-    \addtocontents{mof}{%
-	\protect\contentsline {subsection}{\numberline {}#1}{#2}{#3}%
-    }%
-}
-
 \newcommand*\l@part[2]{%
   \ifnum \c@tocdepth >\m@ne\relax
     \addpenalty\@secpenalty%

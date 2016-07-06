@@ -84,12 +84,6 @@
     url = "http://blogs.oracle.com/bonwick/entry/zfs_the_last_word_in",
     year = "Oct 31, 2005"}
 
-@unpublished{mckusick:ffs_userspace,
-    author = "Marshall Kirk McKusick",
-    title = "Implementing {FFS}",
-    note = "private communication",
-    year = "September 2007"}
-
 @misc{zfs_source_tour,
     title = "{ZFS} Source Tour",
     url = "http://www.opensolaris.org/os/community/zfs/source/"}
@@ -432,7 +426,7 @@
 @inproceedings{levasseur:driverreuse,
     author = {LeVasseur, Joshua and Uhlig, Volkmar and Stoess, Jan and G\"{o}tz, Stefan},
     title = {Unmodified Device Driver Reuse and Improved System Dependability Via Virtual Machines},
-    booktitle = {Proceedings of the 6th USENIX Symposium on Operating Systems Design and Implementation},
+    booktitle = {Proceedings of the USENIX Symposium on Operating Systems Design and Implementation},
     year = {2004},
     pages = {17--30}}
 
@@ -563,16 +557,6 @@
     pages = "328-333",
     year = {2010},
 }
-
-@misc{njoly:valgrind,
-    author = "Nicolas Joly",
-    title = "Private communication",
-    year = "November 2009"}
-
-@misc{njoly:vfstest,
-    author = "Nicolas Joly",
-    title = "Private communication",
-    year = "May-June 2010"}
 
 @misc{thttpd,
     title = "thttpd -- tiny/turbo/throttling HTTP server",
@@ -849,6 +833,13 @@
     year = "March 2010"
 }
 
+@misc{dijkstra:ewd1303,
+   author = "Edsger W. Dijkstra",
+   title = "My recollections of operating system design",
+   year = "2001",
+   url = "http://www.cs.utexas.edu/users/EWD/ewd13xx/EWD1303.PDF",
+}
+
 @inproceedings{weisbach:ddekit,
     author = {Weisbach, Hannes and D\"{o}bel, Bj\"{o}rn and Lackorzynski, Adam},
     title = {Generic User-Level PCI Drivers},
@@ -889,3 +880,64 @@
     booktitle = {Proceedings of EuroBSDCon 2010},
     url = {http://www.mckusick.com/BSDCan/bsdcan2010.pdf},
     year = {2010}}
+
+@inproceedings {rizzo:netmap,
+    author = {Luigi Rizzo},
+    title = {netmap: A Novel Framework for Fast Packet I/O},
+    oooktitle = {Proceedings of the USENIX Annual Technical Conference},
+    year = {2012},
+    month = Aug,
+    pages = {101--112},
+}
+
+@inproceedings{howell:embassies,
+    author = {Howell, Jon and Parno, Bryan and Douceur, John R.},
+    title = {Embassies: Radically Refactoring the Web},
+    booktitle = {Proceedings of the USENIX Conference on Networked Systems Design and Implementation},
+    year = {2013},
+    pages = {529--546},
+    numpages = {18}}
+
+@misc{golang,
+    author = "{The Go Programming Language}",
+    url = "http://golang.org/"}
+
+@misc{grub,
+    author = "{GNU GRUB}",
+    url = "http://www.gnu.org/software/grub/"}
+
+@misc{qemu,
+   author = "{QEMU -- open source processor emulator}",
+   url = "http://qemu.org/"}
+
+@misc{unikernel,
+  author = "{Unikernel}",
+  url = "http://en.wikipedia.org/wiki/Unikernel"}
+
+@article{campbell-kelly:edsac,
+    author = {Martin Campbell-Kelly},
+    title = {Programming the EDSAC: Early Programming Activity at the University of Cambridge},
+    journal ={IEEE Annals of the History of Computing},
+    volume = {20},
+    number = {4},
+    issn = {1058-6180},
+    year = {1998},
+    pages = {46-67},
+    publisher = {IEEE Computer Society},
+}
+
+@inproceedings{kivity:kvm,
+    author = {Avi Kivity and Yaniv Kamay and Dor Laor and Uri Lublin and Anthony Liguori},
+    title = {KVM: the Linux Virtual Machine Monitor},
+    booktitle = {Proceedings of the 2007 Ottawa Linux Symposium},
+    pages = {225--230},
+    year = {2007}
+}
+
+@inproceedings{peter:arrakis,
+   author = {Peter, Simon and Li, Jialin and Zhang, Irene and Ports, Dan R. K. and Woos, Doug and Krishnamurthy, Arvind and Anderson, Thomas and Roscoe, Timothy},
+   title = {Arrakis: The Operating System is the Control Plane},
+   booktitle = {Proceedings of the USENIX Symposium on Operating Systems Design and Implementation},
+   year = {2014},
+   pages = {1--16},
+}
