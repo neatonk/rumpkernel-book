@@ -3,7 +3,7 @@
 \label{chap:introduction}
 
 The mission of the first edition of this book (2012) was to introduce
-the anykernel and rump kernels and motivate their existence.  Additionally, we explored
+the anykernel and rump kernels and the motivation for their existence.  Additionally, we explored
 the characteristics of the technology through various experiments.
 The paramount, often criminally overlooked experiment was the one hiding in
 plain sight: is it possible to construct the system in a sustainable,
@@ -65,7 +65,7 @@ Since it was desirable to keep expensive machines doing something
 besides idling, batch scheduling was used to feed new computations and
 keep idletime to a minimum.
 
-As most of us intuitively know, reaching the solution of a problem is
+As most of us intuitively know, reaching the solution to a problem is
 easier if you are allowed to stumble around with constant feedback, as
 compared to a situation where you must have holistic clairvoyance over the
 entire scenario before you even start.  The lack of near-instant feedback
@@ -131,7 +131,7 @@ to cram them into every hole, regardless of if they fit or not.
 
 Why are we so fascinated with square-shaped pegs?  What happens if we
 throw away the entire operating system?  The first problem with that
-approach is, and it is a literal show-stopper, that applications will
+approach is --- and it is a literal show-stopper --- that applications will
 fail to run.  Already in the late 1940's computations used subroutine
 libraries~\cite{campbell-kelly:edsac}.  The use of subroutine libraries
 has not diminished in the past 70 years, quite to the contrary.
@@ -205,13 +205,13 @@ to function.  The two key terms are \textit{anykernel} and
 Applications need subroutines to work, and those subroutines are provided
 by operating systems.  We call those subroutines drivers, and state that
 not only does a typical application require a large set of drivers,
-but also that those drivers are also non-trivial to write and maintain.  While
+but also that those drivers are non-trivial to write and maintain.  While
 operating systems built around a timesharing model are rich in drivers
 due to having a lot of history behind them, they are not sufficient for
 the use cases required by the modern world.  We need to
 start treating drivers as library-like components instead of requiring a
 separate implementation for each operating system.  The library-approach
-will allow to build the software stack to suit the scenario, instead of
+will allow us to build the software stack to suit the scenario, instead of
 having to build the scenario to suit the available operating systems.
 
 The term \textit{anykernel} was coined in response to the ever-increasing

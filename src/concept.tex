@@ -105,7 +105,7 @@ indirection and overhead.
 Rump kernels are never full kernels which can independently run directly on bare
 metal, and always need lower layer support from the host.  This layer
 can be a spartan, specially-constructed one consisting of some thousands
-of lines of code, or an extremely complex such as a current generation
+of lines of code, or an extremely complex one such as a current generation
 general purpose operating system.
 
 Drivers in a rump kernel remain unmodified over the original ones.
@@ -113,7 +113,7 @@ A large part of the support routines remain unmodified as well.
 Only in places where support is relegated to the host do we require
 specifically written glue code.  As was indicated already in the introductory
 chapter, we use the term \textit{anykernel}
-to describe a kernel code base with the property of being able use
+to describe a kernel code base with the property of being able to use
 unmodified drivers and the relevant support routines in rump kernels.
 
 It should be noted that unlike for example the terms \textit{microkernel}
@@ -216,7 +216,7 @@ implemented on top of the host.
 
 Notably, as we already hinted earlier, the platform
 requirements for a rump kernel are extremely minimal, and a rump kernel
-can run virtually everywhere.  For example, there is no need to run the
+can run virtually anywhere.  For example, there is no need to run the
 rump kernel in privileged hardware mode.  Ultimately, the host has full
 control and fine-grained control of what a rump kernel has access to.
 
@@ -492,8 +492,8 @@ It determines how machine instructions will be executed when a thread
 is running on a CPU and what their effects will be.  The hard context
 is determined by the platform that the thread runs on.  Second, a
 thread represents all auxiliary data required by the operating system.
-We call this auxiliary data the \textit{soft context}.  It comprises
-for example of information determining which process a thread belongs
+We call this auxiliary data the \textit{soft context}.  It is comprised of
+for example the information determining which process a thread belongs
 to, and \eg therefore what credentials and file descriptors it has.
 The soft context is determined by the operating system.
 
@@ -597,7 +597,7 @@ kernel thread context requires a rump kernel context for example to be
 able to allocate memory for the data structures.  Our implicit thread
 implementation doubles as a bootstrap context.
 
-Implicit contexts are created dynamically because because any
+Implicit contexts are created dynamically because any
 preconfigured reasonable amount of contexts risks application deadlock.
 For example, $n$ implicit threads can be waiting inside the rump kernel
 for an event which is supposed to be delivered by the $n+1$'th implicit
@@ -818,7 +818,7 @@ restrictions on the platform and host.  For example, emulating page
 faults and memory protection in a usermode OS exhibits over tenfold
 performance penalty and can be significant in other, though not all,
 hypervisors~\cite{barham:xen}.  Virtual memory support
-was not seen worth the increased implementation complexity and
+was not seen to be worth the increased implementation complexity and
 potentially reduced performance.
 
 The implication of a rump kernel not implementing full memory

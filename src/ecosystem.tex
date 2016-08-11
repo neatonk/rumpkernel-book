@@ -154,7 +154,7 @@ The src-netbsd repository supplies several branches, with the idea
 being that the user can choose the minimal set of sources required for
 their particular application.  The branches are listed
 in Table~\ref{tab:srcnetbsd}.  These branches may be used
-as either a submodule, or fully duplicated into third party
+as either a submodule, or fully duplicated into third-party
 repositories.
 
 \begin{table}[t]
@@ -390,7 +390,7 @@ If it is absolutely necessary to run such programs, the best option is
 to insert yield calls into the busy-looping thread.  To ensure correct
 execution of periodic tasks, application threads should yield or block
 dozens of times per second.  Since yielding is cheap, it is better to
-err on the side of doing it more often than necessarily.  Still, we want
+err on the side of doing it more often than necessary.  Still, we want
 to stress that in our experience, regular I/O bound programs ``just work''
 without modification.
 
@@ -593,7 +593,7 @@ userspace.  In other words, there is a machine architecture component
 and a system side component to the ABI.  The binary can be run only on a
 machine architecture and an operating system which supports the given ABI.
 The obvious example of an operating system supporting the Linux-GNU ABI
-is Linux, but it is also possible to other operating systems to emulate
+is Linux, but it is also possible to use other operating systems to emulate
 various ABIs to allow running programs complied for a non-native ABI.
 
 For Rumprun, we use the same tuple as NetBSD, \eg \verb+x86_64--netbsd+,
@@ -647,7 +647,7 @@ dependencies are satisfied.  Again, doing so honors existing
 conventions; this check is required for example by the
 probe phase of some build frameworks, which determine if a certain
 interface is supported by the given system by trying to link a test
-program using that interface, and iff the link succeeds, mark that
+program using that interface, and if the link succeeds, mark that
 interface as available.  It needs to be noted that these types of checks
 apply only to userspace interfaces, and not to the kernel drivers backing
 those interfaces, so things may still fail at runtime.  However,

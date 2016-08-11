@@ -18,7 +18,7 @@ rump kernels and their clients running on hosts beyond NetBSD userspace.
 \label{sect:partition}
 
 As mentioned in Section~\ref{sect:conceptintro}, to maximize the
-lightweight nature of rump kernels, the kernel code was several
+lightweight nature of rump kernels, the kernel code has several
 logical layers: a base, three factions (dev, net and vfs) and drivers.
 The factions are orthogonal, meaning they do not depend on each other.
 Furthermore, the base does not depend on any other part of the kernel.
@@ -81,7 +81,7 @@ The two techniques we used to address problems are as follows:
 	portions using \texttt{\#ifdef}, as the final result is
 	clearer to anyone looking at the source tree.
 
-	In some cases code, moving had positive effects beyond rump
+	In some cases, code moving had positive effects beyond rump
 	kernels.  One such example was splitting up
 	\verb+sys/kern/init_sysctl.c+, which had evolved to include
 	\textit{sysctl} handlers for many different pieces of
@@ -470,7 +470,7 @@ the NetBSD tree.  Implementations for other platforms are found from
 As an example of a hypercall, we consider allocating memory from the host.
 A hypercall is the only way that a rump kernel can allocate memory at
 runtime.  Notably, though, in the fastpath case the hypercall is used
-to allocate page-sized chunks of memory, which are then dosed out by
+to allocate page-sized chunks of memory, which are then doled out by
 the pool and slab allocators in the rump kernel.  The signature of the memory
 allocation hypercall is the following:
 
@@ -912,8 +912,8 @@ thread's priority.
 \subsubsection{Interrupts and Soft Interrupts}
 
 As mentioned in Section~\ref{sect:preempt}, a rump kernel
-CPU cannot be preempted.  The mechanism of how an interrupt gets
-delivered requires preemption, so we must examine that we meet the
+CPU cannot be preempted.  The mechanism by which an interrupt gets
+delivered requires preemption, so we must examine how we meet the
 requirements of both hardware interrupts and \textit{soft interrupts}.
 
 Hardware interrupt handlers are typically structured to only do a
@@ -2000,7 +2000,7 @@ which can be called only before the rump kernel is bootstrapped.
 An example is \verb+rump_boot_sethowto()+ which sets the
 \texttt{boothowto} variable.  Since there is no virtual
 CPU to schedule before bootstrap, no entry/exit wrappers are
-necessary.  These bootstrap interfaces provided as non-generated prototypes
+necessary.  These bootstrap interfaces are provided as non-generated prototypes
 in \verb+sys/rump/include/rump/rump.h+.
 
 
@@ -2076,7 +2076,7 @@ further I/O operations, \ie read and write, will be directed to
 the backing file on the host.
 
 Due to how etfs is implemented as part of the file system lookup routine,
-the mapped filenames is not browseable (\ie readdir).  However, it does
+the mapped filenames are not browseable (\ie readdir).  However, it does
 not affect the intended use cases such as access to firmware images,
 since the pathnames are hardcoded into the kernel.
 
@@ -2144,7 +2144,7 @@ discussion with kernel modules.
 In NetBSD terminology, a driver which can be loaded and unloaded
 at runtime is said to be \textit{modular}.  The loadable binary
 image containing the driver is called a \textit{kernel module}, or
-\textit{module} for short.  We adopt the terminology for our
+\textit{module} for short.  We adopt this terminology for our
 discussion.
 
 The infrastructure for supporting modular drivers on NetBSD has
@@ -2294,7 +2294,7 @@ the use of the in-kernel linker is a rare operation, and unconditionally
 populating the symbol table is therefore wasteful.
 
 The in-kernel linker itself works the same way as in a regular kernel.
-Loading a module can be initiated either by a client by using the
+Loading a module can be initiated either by a client or by using the
 \texttt{modctl()} system call.  Notably, the kernel module is loaded
 from the rump kernel file system namespace, so only rump kernels with
 the file system faction can support the in-kernel linker.
